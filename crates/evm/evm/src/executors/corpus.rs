@@ -633,7 +633,6 @@ pub struct WorkerCorpus {
     /// Shared transaction-sequence generator.
     sequence_generator: SequenceGenerator,
     /// Identifier of current mutated entry for this worker.
-    current_mutated_index: Option<usize>,
     /// Config
     config: Arc<FuzzCorpusConfig>,
     /// Indices of new entries added to [`WorkerCorpus::in_memory_corpus`] since last sync.
@@ -847,7 +846,6 @@ impl WorkerCorpus {
             },
             self.config.is_coverage_guided(),
         )?;
-        self.current_mutated_index = plan.source();
         Ok(plan)
     }
 
@@ -896,7 +894,6 @@ impl WorkerCorpus {
             failed_replays: seed.failed_replays,
             metrics: seed.metrics,
             sequence_generator,
-            current_mutated_index: None,
             config: config.into(),
             new_entry_indices: Default::default(),
             last_sync_timestamp: 0,
@@ -962,7 +959,6 @@ impl WorkerCorpus {
             self.optimization_best_value.is_none_or(|best| *value > best)
         });
 
-        self.current_mutated_index = None;
         if let Some((value, best_seq)) = optimization
             && improved_optimization
         {
