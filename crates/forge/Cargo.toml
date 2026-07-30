@@ -131,5 +131,6 @@ hashkey = [
     "foundry-config/hashkey",
     "foundry-evm-networks/hashkey",
     "foundry-evm/hashkey",
+    "forge-script/hashkey",
     "forge-verify/hashkey",
 ]

@@ -51,7 +51,7 @@ impl<FEN: FoundryEvmNetwork> ScriptRunner<FEN> {
             }
 
             if script_config.evm_opts.fork_url.is_none()
-                && !script_config.evm_opts.networks.is_tempo()
+                && !script_config.network_profile.is_tempo()
             {
                 self.executor.deploy_create2_deployer()?;
             }

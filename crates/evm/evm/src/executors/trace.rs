@@ -10,9 +10,13 @@ use foundry_evm_core::{
     fork::CreateFork,
     opts::EvmOpts,
 };
-use foundry_evm_networks::NetworkConfigs;
+use foundry_evm_hardforks::TempoHardfork;
+use foundry_evm_networks::{NetworkConfigs, NetworkExecutionContext, ResolvedNetworkProfile};
 use foundry_evm_traces::TraceMode;
-use revm::{context::Transaction, state::Bytecode};
+use revm::{
+    context::{Block, Transaction},
+    state::Bytecode,
+};
 use std::ops::{Deref, DerefMut};
 
 /// A default executor with tracing enabled
@@ -30,12 +34,40 @@ impl<FEN: FoundryEvmNetwork> TracingExecutor<FEN> {
         create2_deployer: Address,
         state_overrides: Option<StateOverride>,
     ) -> eyre::Result<Self> {
-        let db = Backend::spawn(Some(fork))?;
+        Self::new_with_network_profile(
+            env,
+            fork,
+            version,
+            trace_mode,
+            networks.resolve(),
+            create2_deployer,
+            state_overrides,
+        )
+    }
+
+    /// Creates a tracing executor with an already resolved network profile.
+    pub fn new_with_network_profile(
+        env: (EvmEnvFor<FEN>, TxEnvFor<FEN>),
+        fork: CreateFork,
+        version: Option<EvmVersion>,
+        trace_mode: TraceMode,
+        network_profile: ResolvedNetworkProfile,
+        create2_deployer: Address,
+        state_overrides: Option<StateOverride>,
+    ) -> eyre::Result<Self> {
+        let network_context = NetworkExecutionContext::new(
+            env.0.cfg_env.chain_id,
+            env.0.block_env.timestamp().saturating_to(),
+        );
+        let db = Backend::spawn_with_network_profile(Some(fork), network_profile, network_context)?;
         // configures a bare version of the evm executor: no cheatcode and log_collector inspector
         // is enabled, tracing will be enabled only for the targeted transaction
         let mut executor = ExecutorBuilder::default()
             .inspectors(|stack| {
-                stack.trace_mode(trace_mode).networks(networks).create2_deployer(create2_deployer)
+                stack
+                    .trace_mode(trace_mode)
+                    .network_profile(network_profile)
+                    .create2_deployer(create2_deployer)
             })
             .spec_id_opt(version.map(evm_spec_id::<SpecFor<FEN>>))
             .build(env.0, env.1, db);
@@ -94,6 +126,38 @@ impl<FEN: FoundryEvmNetwork> TracingExecutor<FEN> {
 
         let chain = tx_env.chain_id().unwrap().into();
         Ok((evm_env, tx_env, fork, chain, networks))
+    }
+
+    /// Uses the fork block number from the config while preserving a resolved network profile.
+    pub async fn get_fork_material_with_network_profile(
+        config: &mut Config,
+        mut evm_opts: EvmOpts,
+        network_profile: ResolvedNetworkProfile,
+    ) -> eyre::Result<(EvmEnvFor<FEN>, TxEnvFor<FEN>, CreateFork, Chain, ResolvedNetworkProfile)>
+    {
+        evm_opts.fork_url = Some(config.get_rpc_url_or_localhost_http()?.into_owned());
+        evm_opts.fork_block_number = config.fork_block_number;
+
+        let (evm_env, tx_env, fork_block) = evm_opts
+            .env_with_network_profile::<SpecFor<FEN>, BlockEnvFor<FEN>, TxEnvFor<FEN>>(
+                network_profile,
+            )
+            .await?;
+
+        let fork = evm_opts
+            .get_fork_with_network_profile(
+                config,
+                evm_env.cfg_env.chain_id,
+                fork_block,
+                network_profile,
+            )
+            .unwrap();
+        config
+            .labels
+            .extend(network_profile.precompile_labels(Some(config.evm_spec_id::<TempoHardfork>())));
+
+        let chain = tx_env.chain_id().unwrap().into();
+        Ok((evm_env, tx_env, fork, chain, network_profile))
     }
 }
 

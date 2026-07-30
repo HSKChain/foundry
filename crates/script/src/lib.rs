@@ -48,7 +48,10 @@ use foundry_evm::{
     backend::Backend,
     core::{
         Breakpoints, FoundryTransaction,
-        evm::{EthEvmNetwork, FoundryEvmNetwork, OpEvmNetwork, TempoEvmNetwork, TxEnvFor},
+        evm::{
+            BlockEnvFor, EthEvmNetwork, FoundryEvmNetwork, OpEvmNetwork, SpecFor, TempoEvmNetwork,
+            TxEnvFor,
+        },
         tempo::PATH_USD_ADDRESS,
     },
     executors::ExecutorBuilder,
@@ -57,10 +60,10 @@ use foundry_evm::{
         cheatcodes::{BroadcastableTransactions, Wallets},
     },
     opts::EvmOpts,
-    revm::interpreter::InstructionResult,
+    revm::{context::Block, interpreter::InstructionResult},
     traces::{TraceMode, Traces},
 };
-use foundry_evm_networks::NetworkConfigs;
+use foundry_evm_networks::{NetworkConfigs, NetworkExecutionContext, ResolvedNetworkProfile};
 use foundry_wallets::MultiWalletOpts;
 use serde::Serialize;
 use std::path::PathBuf;
@@ -262,10 +265,11 @@ impl ScriptArgs {
         Ok((config, evm_opts))
     }
 
-    async fn preprocess<FEN: FoundryEvmNetwork>(
+    async fn preprocess_with_network_profile<FEN: FoundryEvmNetwork>(
         self,
         config: Config,
         mut evm_opts: EvmOpts,
+        network_profile: ResolvedNetworkProfile,
     ) -> Result<PreprocessedState<FEN>> {
         let script_wallets = Wallets::new(self.wallets.get_multi_wallet().await?, self.evm.sender);
         let browser_wallet = self.wallets.browser_signer::<FEN::Network>().await?;
@@ -285,13 +289,14 @@ impl ScriptArgs {
             }
         }
 
-        let fee_token = if evm_opts.networks.is_tempo() && self.fee_token.is_none() {
+        let fee_token = if network_profile.is_tempo() && self.fee_token.is_none() {
             Some(PATH_USD_ADDRESS)
         } else {
             self.fee_token
         };
 
-        let script_config = ScriptConfig::new(config, evm_opts, self.batch, fee_token).await?;
+        let script_config =
+            ScriptConfig::new(config, evm_opts, network_profile, self.batch, fee_token).await?;
         Ok(PreprocessedState { args: self, script_config, script_wallets, browser_wallet })
     }
 
@@ -301,8 +306,9 @@ impl ScriptArgs {
         trace!(target: "script", "executing script command");
 
         let (config, evm_opts) = self.resolved_evm_opts().await?;
+        let network_profile = evm_opts.networks.resolve();
 
-        let is_tempo = evm_opts.networks.is_tempo();
+        let is_tempo = network_profile.is_tempo();
 
         if self.batch && !is_tempo {
             eyre::bail!("--batch mode is only supported on Tempo networks");
@@ -310,7 +316,10 @@ impl ScriptArgs {
 
         if is_tempo {
             let batch = self.batch;
-            let bundled = match self.prepare_bundled::<TempoEvmNetwork>(config, evm_opts).await? {
+            let bundled = match self
+                .prepare_bundled::<TempoEvmNetwork>(config, evm_opts, network_profile)
+                .await?
+            {
                 Some(bundled) => bundled,
                 None => return Ok(()),
             };
@@ -321,10 +330,10 @@ impl ScriptArgs {
                 broadcasted.verify().await?;
             }
             Ok(())
-        } else if evm_opts.networks.is_optimism() {
-            self.run_generic_script::<OpEvmNetwork>(config, evm_opts).await
+        } else if network_profile.is_optimism() {
+            self.run_generic_script::<OpEvmNetwork>(config, evm_opts, network_profile).await
         } else {
-            self.run_generic_script::<EthEvmNetwork>(config, evm_opts).await
+            self.run_generic_script::<EthEvmNetwork>(config, evm_opts, network_profile).await
         }
     }
 
@@ -336,8 +345,10 @@ impl ScriptArgs {
         self,
         config: Config,
         evm_opts: EvmOpts,
+        network_profile: ResolvedNetworkProfile,
     ) -> Result<Option<BundledState<FEN>>> {
-        let state = self.preprocess::<FEN>(config, evm_opts).await?;
+        let state =
+            self.preprocess_with_network_profile::<FEN>(config, evm_opts, network_profile).await?;
         let create2_deployer = state.script_config.evm_opts.create2_deployer;
         let compiled = state.compile()?;
 
@@ -430,8 +441,9 @@ impl ScriptArgs {
         self,
         config: Config,
         evm_opts: EvmOpts,
+        network_profile: ResolvedNetworkProfile,
     ) -> Result<()> {
-        let bundled = match self.prepare_bundled::<FEN>(config, evm_opts).await? {
+        let bundled = match self.prepare_bundled::<FEN>(config, evm_opts, network_profile).await? {
             Some(bundled) => bundled,
             None => return Ok(()),
         };
@@ -703,6 +715,8 @@ struct JsonResult<'a, N: Network> {
 pub struct ScriptConfig<FEN: FoundryEvmNetwork> {
     pub config: Config,
     pub evm_opts: EvmOpts,
+    /// Immutable runtime network profile.
+    pub network_profile: ResolvedNetworkProfile,
     pub sender_nonce: u64,
     /// Maps a rpc url to a backend
     pub backends: HashMap<String, Backend<FEN>>,
@@ -716,6 +730,7 @@ impl<FEN: FoundryEvmNetwork> ScriptConfig<FEN> {
     pub async fn new(
         config: Config,
         evm_opts: EvmOpts,
+        network_profile: ResolvedNetworkProfile,
         batch: bool,
         fee_token: Option<Address>,
     ) -> Result<Self> {
@@ -726,7 +741,15 @@ impl<FEN: FoundryEvmNetwork> ScriptConfig<FEN> {
             1
         };
 
-        Ok(Self { config, evm_opts, sender_nonce, backends: HashMap::default(), batch, fee_token })
+        Ok(Self {
+            config,
+            evm_opts,
+            network_profile,
+            sender_nonce,
+            backends: HashMap::default(),
+            batch,
+            fee_token,
+        })
     }
 
     pub async fn update_sender(&mut self, sender: Address) -> Result<()> {
@@ -760,15 +783,32 @@ impl<FEN: FoundryEvmNetwork> ScriptConfig<FEN> {
         debug: bool,
     ) -> Result<ScriptRunner<FEN>> {
         trace!("preparing script runner");
-        let (evm_env, mut tx_env, fork_block) = self.evm_opts.env::<_, _, TxEnvFor<FEN>>().await?;
+        let (evm_env, mut tx_env, fork_block) = self
+            .evm_opts
+            .env_with_network_profile::<SpecFor<FEN>, BlockEnvFor<FEN>, TxEnvFor<FEN>>(
+                self.network_profile,
+            )
+            .await?;
+        let network_context = NetworkExecutionContext::new(
+            evm_env.cfg_env.chain_id,
+            evm_env.block_env.timestamp().saturating_to(),
+        );
 
         let db = if let Some(fork_url) = self.evm_opts.fork_url.as_ref() {
             match self.backends.get(fork_url) {
                 Some(db) => db.clone(),
                 None => {
-                    let fork =
-                        self.evm_opts.get_fork(&self.config, evm_env.cfg_env.chain_id, fork_block);
-                    let backend = Backend::spawn(fork)?;
+                    let fork = self.evm_opts.get_fork_with_network_profile(
+                        &self.config,
+                        evm_env.cfg_env.chain_id,
+                        fork_block,
+                        self.network_profile,
+                    );
+                    let backend = Backend::spawn_with_network_profile(
+                        fork,
+                        self.network_profile,
+                        network_context,
+                    )?;
                     self.backends.insert(fork_url.clone(), backend.clone());
                     backend
                 }
@@ -777,7 +817,7 @@ impl<FEN: FoundryEvmNetwork> ScriptConfig<FEN> {
             // It's only really `None`, when we don't pass any `--fork-url`. And if so, there is
             // no need to cache it, since there won't be any onchain simulation that we'd need
             // to cache the backend for.
-            Backend::spawn(None)?
+            Backend::spawn_with_network_profile(None, self.network_profile, network_context)?
         };
 
         // We need to enable tracing to decode contract names: local or external.
@@ -786,7 +826,7 @@ impl<FEN: FoundryEvmNetwork> ScriptConfig<FEN> {
                 stack
                     .logs(self.config.live_logs)
                     .trace_mode(if debug { TraceMode::Debug } else { TraceMode::Call })
-                    .networks(self.evm_opts.networks)
+                    .network_profile(self.network_profile)
                     .create2_deployer(self.evm_opts.create2_deployer)
             })
             .spec_id(self.config.evm_spec_id())
@@ -832,6 +872,27 @@ mod tests {
         let sig = "0x522bb704000000000000000000000000f39fd6e51aad88f6f4ce6ab8827279cfFFb92266";
         let args = ScriptArgs::parse_from(["foundry-cli", "Contract.sol", "--sig", sig]);
         assert_eq!(args.sig, sig);
+    }
+
+    #[cfg(feature = "hashkey")]
+    #[tokio::test]
+    async fn script_config_preserves_hashkey_profile_for_local_simulation() {
+        let mut evm_opts = EvmOpts::default();
+        evm_opts.networks = NetworkConfigs::with_hashkey();
+        let network_profile = evm_opts.networks.resolve();
+        let mut script_config = ScriptConfig::<OpEvmNetwork>::new(
+            Config::default(),
+            evm_opts,
+            network_profile,
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+
+        script_config.evm_opts.networks = NetworkConfigs::default();
+        assert_eq!(script_config.network_profile, network_profile);
+        assert!(script_config.network_profile.is_hashkey());
     }
 
     #[test]
