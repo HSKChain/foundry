@@ -2910,6 +2910,7 @@ dependencies = [
  "foundry-compilers",
  "foundry-config",
  "foundry-evm",
+ "foundry-evm-networks",
  "foundry-solang-parser",
  "foundry-test-utils",
  "itertools 0.14.0",
