@@ -17,14 +17,16 @@ use alloy_evm::precompiles::Precompile;
 use alloy_evm::precompiles::PrecompilesMap;
 use alloy_op_hardforks::{OpChainHardforks, OpHardforks};
 use alloy_primitives::{Address, ChainId, map::AddressHashMap};
+#[cfg(feature = "hashkey")]
+use alloy_primitives::{B256, U256, keccak256};
 use clap::Parser;
 use foundry_evm_hardforks::{FoundryHardfork, TempoHardfork};
 #[cfg(feature = "hashkey")]
 use hsk_b20_config::B20Config;
 #[cfg(feature = "hashkey")]
 use hsk_b20_precompiles::{
-    ActivationRegistry, B20Factory, B20Spec, BerylLookup, NoopPrecompileCallObserver,
-    PolicyRegistryPrecompile,
+    ActivationFeature, ActivationRegistry, B20Factory, B20Spec, BerylLookup,
+    NoopPrecompileCallObserver, PolicyRegistryPrecompile,
 };
 use revm::precompile::PrecompileId;
 use serde::{Deserialize, Serialize};
@@ -210,6 +212,59 @@ pub enum NetworkStatePlan {
     HashKey,
 }
 
+/// Standalone-local B20 genesis state owned by the resolved HashKey profile.
+#[cfg(feature = "hashkey")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct B20GenesisAlloc {
+    /// Singleton marker accounts as `(address, code_hash, nonce)`.
+    pub markers: [(Address, B256, u64); 3],
+    /// Activation feature storage as `(address, slot, value)`.
+    pub feature_seeds: [(Address, U256, U256); 3],
+}
+
+#[cfg(feature = "hashkey")]
+impl B20GenesisAlloc {
+    /// Builds the deterministic standalone-local B20 genesis allocation.
+    pub fn standalone_local() -> Self {
+        let marker_code_hash = keccak256([0xef]);
+        let activation_root = erc7201_namespace_root(b"base.activation_registry");
+        let feature_slot = |feature: ActivationFeature| {
+            let mut encoded = [0u8; 64];
+            encoded[..32].copy_from_slice(feature.id().as_slice());
+            encoded[32..].copy_from_slice(&activation_root.to_be_bytes::<32>());
+            U256::from_be_bytes(keccak256(encoded).0)
+        };
+
+        Self {
+            markers: [
+                (B20_FACTORY, marker_code_hash, 1),
+                (B20_ACTIVATION_REGISTRY, marker_code_hash, 1),
+                (B20_POLICY_REGISTRY, marker_code_hash, 1),
+            ],
+            feature_seeds: [
+                (
+                    B20_ACTIVATION_REGISTRY,
+                    feature_slot(ActivationFeature::PolicyRegistry),
+                    U256::from(1),
+                ),
+                (
+                    B20_ACTIVATION_REGISTRY,
+                    feature_slot(ActivationFeature::B20Stablecoin),
+                    U256::from(1),
+                ),
+                (B20_ACTIVATION_REGISTRY, feature_slot(ActivationFeature::B20Asset), U256::from(1)),
+            ],
+        }
+    }
+}
+
+#[cfg(feature = "hashkey")]
+fn erc7201_namespace_root(namespace: &[u8]) -> U256 {
+    let namespace_hash = U256::from_be_bytes(keccak256(namespace).0);
+    let root_hash = keccak256((namespace_hash - U256::from(1)).to_be_bytes::<32>());
+    U256::from_be_bytes(root_hash.0) & !U256::from(0xff)
+}
+
 /// Error returned when two network extensions claim the same singleton precompile address.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PrecompileCompositionError {
@@ -315,6 +370,12 @@ impl ResolvedNetworkProfile {
     pub fn b20_config(self) -> B20Config {
         B20Config::new(self.b20_activation_time, self.b20_activation_admin)
             .expect("resolved HashKey B20 config is valid")
+    }
+
+    /// Returns the standalone-local B20 genesis allocation when HashKey is selected.
+    #[cfg(feature = "hashkey")]
+    pub fn b20_genesis_alloc(self) -> Option<B20GenesisAlloc> {
+        self.is_hashkey().then(B20GenesisAlloc::standalone_local)
     }
 
     /// Returns the state preparation plan for this profile.
@@ -802,6 +863,49 @@ mod tests {
         let b20_config = profile.b20_config();
         assert_eq!(b20_config.activation_time(), Some(0));
         assert_eq!(b20_config.activation_admin(), Some(HSK_B20_LOCAL_ADMIN));
+    }
+
+    #[cfg(feature = "hashkey")]
+    #[test]
+    fn hashkey_genesis_alloc_uses_canonical_markers_and_feature_slots() {
+        let alloc = NetworkConfigs::with_hashkey().resolve().b20_genesis_alloc().unwrap();
+        let marker_code_hash = keccak256([0xef]);
+
+        assert_eq!(alloc.markers.len(), 3);
+        for (_, code_hash, nonce) in alloc.markers {
+            assert_eq!(code_hash, marker_code_hash);
+            assert_eq!(nonce, 1);
+        }
+        assert_eq!(
+            alloc.feature_seeds.map(|(_, slot, value)| (slot, value)),
+            [
+                (
+                    alloy_primitives::uint!(
+                        0x8c5327ddcca092db72284503162323c6e8d392394b1d5c71991227bbc26f7c07_U256
+                    ),
+                    U256::from(1),
+                ),
+                (
+                    alloy_primitives::uint!(
+                        0xca7c276524c5aeaac4d56c8a3d36eb5f9a64f60841fb65b539c99c21ca7df109_U256
+                    ),
+                    U256::from(1),
+                ),
+                (
+                    alloy_primitives::uint!(
+                        0x819420403a306232adb8ee78d9f35b5090371155b34376cf9b020e30029278e5_U256
+                    ),
+                    U256::from(1),
+                ),
+            ]
+        );
+    }
+
+    #[cfg(feature = "hashkey")]
+    #[test]
+    fn non_hashkey_profiles_have_no_b20_genesis_alloc() {
+        assert!(NetworkConfigs::default().resolve().b20_genesis_alloc().is_none());
+        assert!(NetworkConfigs::with_optimism().resolve().b20_genesis_alloc().is_none());
     }
 
     #[cfg(feature = "hashkey")]

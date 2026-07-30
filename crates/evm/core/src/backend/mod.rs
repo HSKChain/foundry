@@ -600,11 +600,43 @@ impl<FEN: FoundryEvmNetwork> Backend<FEN> {
             );
             backend.inner.launched_with_fork = Some((fork_id, fork_ids.0, fork_ids.1));
             backend.active_fork_ids = Some(fork_ids);
+        } else {
+            backend.seed_local_network_state()?;
         }
 
         trace!(target: "backend", forking_mode=? backend.active_fork_ids.is_some(), "created executor backend");
 
         Ok(backend)
+    }
+
+    /// Seeds profile-owned standalone-local state once at backend construction.
+    #[cfg(feature = "hashkey")]
+    fn seed_local_network_state(&mut self) -> eyre::Result<()> {
+        let Some(alloc) = self.network_profile.b20_genesis_alloc() else { return Ok(()) };
+
+        for (address, code_hash, nonce) in alloc.markers {
+            let account = self.basic(address)?.unwrap_or_default();
+            self.insert_account_info(
+                address,
+                AccountInfo {
+                    code: Some(Bytecode::new_raw(alloy_primitives::Bytes::from_static(&[0xef]))),
+                    code_hash,
+                    nonce,
+                    ..account
+                },
+            );
+        }
+        for (address, slot, value) in alloc.feature_seeds {
+            self.insert_account_storage(address, slot, value)?;
+        }
+
+        Ok(())
+    }
+
+    /// No profile-owned local state exists without the HashKey capability.
+    #[cfg(not(feature = "hashkey"))]
+    const fn seed_local_network_state(&mut self) -> eyre::Result<()> {
+        Ok(())
     }
 
     /// Creates a new instance of `Backend` with fork added to the fork database and sets the fork
@@ -2292,15 +2324,33 @@ mod tests {
     fn backend_transports_profile_and_context_through_clones_and_warm_precompiles() {
         let profile = NetworkConfigs::with_hashkey().resolve();
         let context = NetworkExecutionContext::new(31337, 0);
-        let backend =
+        let mut backend =
             Backend::<EthEvmNetwork>::spawn_with_network_profile(None, profile, context).unwrap();
+        let b20_factory = address!("B20F000000000000000000000000000000000000");
+        let alloc = profile.b20_genesis_alloc().unwrap();
+
+        for (address, code_hash, nonce) in alloc.markers {
+            let account = backend.basic_ref(address).unwrap().unwrap();
+            assert_eq!(account.code_hash, code_hash);
+            assert_eq!(account.nonce, nonce);
+            assert_eq!(account.code.unwrap().original_bytes().as_ref(), &[0xef]);
+        }
+        for (address, slot, value) in alloc.feature_seeds {
+            assert_eq!(backend.storage_ref(address, slot).unwrap(), value);
+        }
+
+        let (activation_registry, feature_slot, _) = alloc.feature_seeds[0];
+        backend.insert_account_storage(activation_registry, feature_slot, U256::ZERO).unwrap();
         let cloned = backend.clone();
         let empty = backend.clone_empty();
-        let b20_factory = address!("B20F000000000000000000000000000000000000");
 
         assert_eq!(backend.network_profile(), profile);
         assert_eq!(cloned.network_profile(), profile);
         assert_eq!(empty.network_profile(), profile);
+        assert_eq!(cloned.storage_ref(activation_registry, feature_slot).unwrap(), U256::ZERO);
+        let empty_factory = empty.basic_ref(b20_factory).unwrap().unwrap_or_default();
+        assert_ne!(empty_factory.code.unwrap().original_bytes().as_ref(), &[0xef]);
+        assert_eq!(empty_factory.nonce, 0);
         assert!(backend.is_existing_precompile(&b20_factory));
         assert!(empty.is_existing_precompile(&b20_factory));
     }
