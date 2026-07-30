@@ -1,6 +1,6 @@
 use crate::{executors::Executor, inspectors::InspectorStackBuilder};
 use foundry_evm_core::{
-    backend::Backend,
+    backend::{Backend, DatabaseExt},
     evm::{BlockEnvFor, EvmEnvFor, FoundryEvmNetwork, SpecFor, TxEnvFor},
 };
 use revm::context::{Block, Transaction};
@@ -85,6 +85,11 @@ impl<FEN: FoundryEvmNetwork> ExecutorBuilder<FEN> {
         db: Backend<FEN>,
     ) -> Executor<FEN> {
         let Self { mut stack, gas_limit, spec, legacy_assertions, .. } = self;
+        assert_eq!(
+            stack.network_profile,
+            db.network_profile(),
+            "executor inspector profile must match backend profile",
+        );
         if stack.block.is_none() {
             stack.block = Some(evm_env.block_env.clone());
         }
@@ -96,5 +101,26 @@ impl<FEN: FoundryEvmNetwork> ExecutorBuilder<FEN> {
             evm_env.cfg_env.set_spec_and_mainnet_gas_params(spec);
         }
         Executor::new(db, evm_env, tx_env, stack.build(), gas_limit, legacy_assertions)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use foundry_evm_core::evm::EthEvmNetwork;
+    use foundry_evm_networks::{NetworkConfigs, NetworkExecutionContext};
+
+    #[test]
+    #[should_panic(expected = "executor inspector profile must match backend profile")]
+    fn rejects_a_silently_defaulted_inspector_profile() {
+        let network_profile = NetworkConfigs::with_celo().resolve();
+        let backend = Backend::<EthEvmNetwork>::spawn_with_network_profile(
+            None,
+            network_profile,
+            NetworkExecutionContext::default(),
+        )
+        .unwrap();
+
+        ExecutorBuilder::default().build(Default::default(), Default::default(), backend);
     }
 }

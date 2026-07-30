@@ -2114,7 +2114,7 @@ impl<N: Network> Backend<N> {
                     node_config.fork_urls = vec![eth_rpc_url.clone()];
 
                     node_config
-                        .setup_fork_db_config_with_network_profile(
+                        .setup_fork_db_config(
                             eth_rpc_url,
                             &mut evm_env,
                             &self.fees,
@@ -2277,12 +2277,7 @@ impl<N: Network> Backend<N> {
 
         let mut evm_env = self.evm_env.read().clone();
         let (forked_db, client_fork_config) = node_config
-            .setup_fork_db_config_with_network_profile(
-                fork_url,
-                &mut evm_env,
-                &self.fees,
-                self.network_profile,
-            )
+            .setup_fork_db_config(fork_url, &mut evm_env, &self.fees, self.network_profile)
             .await?;
 
         *self.db.write().await = Box::new(forked_db);

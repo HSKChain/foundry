@@ -210,12 +210,6 @@ impl<BLOCK: Clone> InspectorStackBuilder<BLOCK> {
         self
     }
 
-    /// Sets a profile from unresolved configuration for compatibility at external entry points.
-    #[inline]
-    pub const fn networks(self, networks: foundry_evm_networks::NetworkConfigs) -> Self {
-        self.network_profile(networks.resolve())
-    }
-
     #[inline]
     pub const fn create2_deployer(mut self, create2_deployer: Address) -> Self {
         self.create2_deployer = create2_deployer;
@@ -573,12 +567,6 @@ impl<FEN: FoundryEvmNetwork> InspectorStack<FEN> {
     #[inline]
     pub const fn network_profile(&mut self, network_profile: ResolvedNetworkProfile) {
         self.inner.network_profile = network_profile;
-    }
-
-    /// Sets a profile from unresolved configuration for compatibility at external entry points.
-    #[inline]
-    pub const fn networks(&mut self, networks: foundry_evm_networks::NetworkConfigs) {
-        self.network_profile(networks.resolve());
     }
 
     /// Set the CREATE2 deployer address.

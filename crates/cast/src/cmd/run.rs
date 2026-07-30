@@ -206,11 +206,7 @@ impl RunArgs {
         let (block, (mut evm_env, tx_env, fork, chain, network_profile)) = tokio::try_join!(
             // fetch the block the transaction was mined in
             provider.get_block(tx_block_number.into()).full().into_future().map_err(Into::into),
-            TracingExecutor::<FEN>::get_fork_material_with_network_profile(
-                &mut config,
-                evm_opts,
-                network_profile,
-            )
+            TracingExecutor::<FEN>::get_fork_material(&mut config, evm_opts, network_profile,)
         )?;
 
         let mut evm_version = self.evm_version;
@@ -258,7 +254,7 @@ impl RunArgs {
                 InternalTraceMode::None
             })
             .with_state_changes(shell::verbosity() > 4);
-        let mut executor = TracingExecutor::<FEN>::new_with_network_profile(
+        let mut executor = TracingExecutor::<FEN>::new(
             (evm_env.clone(), tx_env),
             fork,
             evm_version,

@@ -320,12 +320,8 @@ impl CallArgs {
 
             let create2_deployer = evm_opts.create2_deployer;
             let (mut evm_env, tx_env, fork, chain, network_profile) =
-                TracingExecutor::<FEN>::get_fork_material_with_network_profile(
-                    &mut config,
-                    evm_opts,
-                    network_profile,
-                )
-                .await?;
+                TracingExecutor::<FEN>::get_fork_material(&mut config, evm_opts, network_profile)
+                    .await?;
 
             // modify settings that usually set in eth_call
             evm_env.cfg_env.disable_block_gas_limit = true;
@@ -350,7 +346,7 @@ impl CallArgs {
                     InternalTraceMode::None
                 })
                 .with_state_changes(shell::verbosity() > 4);
-            let mut executor = TracingExecutor::<FEN>::new_with_network_profile(
+            let mut executor = TracingExecutor::<FEN>::new(
                 (evm_env, tx_env),
                 fork,
                 evm_version,

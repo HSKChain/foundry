@@ -1187,13 +1187,7 @@ impl NodeConfig {
 
         let (db, fork): (Arc<TokioRwLock<Box<dyn Db>>>, Option<ClientFork>) =
             if let Some(eth_rpc_url) = self.fork_urls.first().cloned() {
-                self.setup_fork_db_with_network_profile(
-                    eth_rpc_url,
-                    &mut evm_env,
-                    &fees,
-                    network_profile,
-                )
-                .await?
+                self.setup_fork_db(eth_rpc_url, &mut evm_env, &fees, network_profile).await?
             } else {
                 (Arc::new(TokioRwLock::new(Box::<MemDb>::default())), None)
             };
@@ -1276,22 +1270,10 @@ impl NodeConfig {
         eth_rpc_url: String,
         evm_env: &mut EvmEnv,
         fees: &FeeManager,
-    ) -> Result<(Arc<TokioRwLock<Box<dyn Db>>>, Option<ClientFork>)> {
-        self.setup_fork_db_with_network_profile(eth_rpc_url, evm_env, fees, self.networks.resolve())
-            .await
-    }
-
-    /// Configures a fork with an already resolved network profile.
-    pub async fn setup_fork_db_with_network_profile(
-        &mut self,
-        eth_rpc_url: String,
-        evm_env: &mut EvmEnv,
-        fees: &FeeManager,
         network_profile: ResolvedNetworkProfile,
     ) -> Result<(Arc<TokioRwLock<Box<dyn Db>>>, Option<ClientFork>)> {
-        let (db, config) = self
-            .setup_fork_db_config_with_network_profile(eth_rpc_url, evm_env, fees, network_profile)
-            .await?;
+        let (db, config) =
+            self.setup_fork_db_config(eth_rpc_url, evm_env, fees, network_profile).await?;
         let db: Arc<TokioRwLock<Box<dyn Db>>> = Arc::new(TokioRwLock::new(Box::new(db)));
         let fork = ClientFork::new(config, Arc::clone(&db));
         Ok((db, Some(fork)))
@@ -1303,22 +1285,6 @@ impl NodeConfig {
     ///  - modifying some parameters of the passed `env`
     ///  - mutating some members of `self`
     pub async fn setup_fork_db_config(
-        &mut self,
-        eth_rpc_url: String,
-        evm_env: &mut EvmEnv,
-        fees: &FeeManager,
-    ) -> Result<(ForkedDatabase<AnyNetwork>, ClientForkConfig)> {
-        self.setup_fork_db_config_with_network_profile(
-            eth_rpc_url,
-            evm_env,
-            fees,
-            self.networks.resolve(),
-        )
-        .await
-    }
-
-    /// Configures fork state with an already resolved network profile.
-    pub async fn setup_fork_db_config_with_network_profile(
         &mut self,
         eth_rpc_url: String,
         evm_env: &mut EvmEnv,

@@ -11,7 +11,7 @@ use foundry_evm_core::{
     opts::EvmOpts,
 };
 use foundry_evm_hardforks::TempoHardfork;
-use foundry_evm_networks::{NetworkConfigs, NetworkExecutionContext, ResolvedNetworkProfile};
+use foundry_evm_networks::{NetworkExecutionContext, ResolvedNetworkProfile};
 use foundry_evm_traces::TraceMode;
 use revm::{
     context::{Block, Transaction},
@@ -26,27 +26,6 @@ pub struct TracingExecutor<FEN: FoundryEvmNetwork> {
 
 impl<FEN: FoundryEvmNetwork> TracingExecutor<FEN> {
     pub fn new(
-        env: (EvmEnvFor<FEN>, TxEnvFor<FEN>),
-        fork: CreateFork,
-        version: Option<EvmVersion>,
-        trace_mode: TraceMode,
-        networks: NetworkConfigs,
-        create2_deployer: Address,
-        state_overrides: Option<StateOverride>,
-    ) -> eyre::Result<Self> {
-        Self::new_with_network_profile(
-            env,
-            fork,
-            version,
-            trace_mode,
-            networks.resolve(),
-            create2_deployer,
-            state_overrides,
-        )
-    }
-
-    /// Creates a tracing executor with an already resolved network profile.
-    pub fn new_with_network_profile(
         env: (EvmEnvFor<FEN>, TxEnvFor<FEN>),
         fork: CreateFork,
         version: Option<EvmVersion>,
@@ -111,25 +90,6 @@ impl<FEN: FoundryEvmNetwork> TracingExecutor<FEN> {
 
     /// uses the fork block number from the config
     pub async fn get_fork_material(
-        config: &mut Config,
-        mut evm_opts: EvmOpts,
-    ) -> eyre::Result<(EvmEnvFor<FEN>, TxEnvFor<FEN>, CreateFork, Chain, NetworkConfigs)> {
-        evm_opts.fork_url = Some(config.get_rpc_url_or_localhost_http()?.into_owned());
-        evm_opts.fork_block_number = config.fork_block_number;
-
-        let (evm_env, tx_env, fork_block) =
-            evm_opts.env::<SpecFor<FEN>, BlockEnvFor<FEN>, TxEnvFor<FEN>>().await?;
-
-        let fork = evm_opts.get_fork(config, evm_env.cfg_env.chain_id, fork_block).unwrap();
-        let networks = evm_opts.networks.with_chain_id(evm_env.cfg_env.chain_id);
-        config.labels.extend(networks.precompiles_label());
-
-        let chain = tx_env.chain_id().unwrap().into();
-        Ok((evm_env, tx_env, fork, chain, networks))
-    }
-
-    /// Uses the fork block number from the config while preserving a resolved network profile.
-    pub async fn get_fork_material_with_network_profile(
         config: &mut Config,
         mut evm_opts: EvmOpts,
         network_profile: ResolvedNetworkProfile,
