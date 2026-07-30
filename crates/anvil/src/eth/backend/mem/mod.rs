@@ -107,7 +107,7 @@ use foundry_evm::{
         get_blob_base_fee_update_fraction_by_spec_id,
     },
 };
-use foundry_evm_networks::NetworkConfigs;
+use foundry_evm_networks::{NetworkExecutionContext, NetworkStatePlan, ResolvedNetworkProfile};
 use foundry_primitives::{
     FoundryNetwork, FoundryReceiptEnvelope, FoundryTransactionRequest, FoundryTxEnvelope,
     FoundryTxReceipt, get_deposit_tx_parts,
@@ -226,8 +226,8 @@ pub struct Backend<N: Network> {
     states: Arc<RwLock<InMemoryBlockStates>>,
     /// EVM environment data of the chain (block env, cfg env).
     evm_env: Arc<RwLock<EvmEnv>>,
-    /// Network configuration (optimism, custom precompiles, etc.)
-    networks: NetworkConfigs,
+    /// Immutable runtime network semantics.
+    network_profile: ResolvedNetworkProfile,
     /// The active hardfork.
     hardfork: FoundryHardfork,
     /// This is set if this is currently forked off another client.
@@ -271,7 +271,7 @@ impl<N: Network> Clone for Backend<N> {
             blockchain: self.blockchain.clone(),
             states: self.states.clone(),
             evm_env: self.evm_env.clone(),
-            networks: self.networks,
+            network_profile: self.network_profile,
             hardfork: self.hardfork,
             fork: self.fork.clone(),
             time: self.time.clone(),
@@ -491,12 +491,17 @@ impl<N: Network> Backend<N> {
 
     /// Returns true if op-stack deposits are active
     pub const fn is_optimism(&self) -> bool {
-        self.networks.is_optimism()
+        self.network_profile.is_optimism()
     }
 
     /// Returns true if Tempo network mode is active
     pub const fn is_tempo(&self) -> bool {
-        self.networks.is_tempo()
+        self.network_profile.is_tempo()
+    }
+
+    /// Returns the immutable runtime network profile.
+    pub const fn network_profile(&self) -> ResolvedNetworkProfile {
+        self.network_profile
     }
 
     /// Returns the active hardfork.
@@ -514,8 +519,11 @@ impl<N: Network> Backend<N> {
             precompiles_map.insert(precompile.id().name().to_string(), *address);
         }
 
-        // Extend with configured network precompiles.
-        precompiles_map.extend(self.networks.precompiles());
+        // Extend with precompiles projected by the resolved network profile.
+        precompiles_map.extend(
+            self.network_profile
+                .precompile_inventory(self.is_tempo().then(|| TempoHardfork::from(self.hardfork))),
+        );
 
         if let Some(factory) = &self.precompile_factory {
             for (address, precompile) in factory.precompiles() {
@@ -1113,8 +1121,16 @@ impl<N: Network> Backend<N> {
     /// 1. Network-specific precompiles (e.g. Tempo, OP)
     /// 2. User-provided precompiles via [`PrecompileFactory`]
     /// 3. Cheatcode ecrecover overrides (if active)
-    fn inject_precompiles(&self, precompiles: &mut PrecompilesMap) {
-        self.networks.inject_precompiles(precompiles);
+    fn inject_precompiles(&self, precompiles: &mut PrecompilesMap, evm_env: &EvmEnv) {
+        self.network_profile
+            .inject_precompiles(
+                precompiles,
+                NetworkExecutionContext::new(
+                    evm_env.cfg_env.chain_id,
+                    evm_env.block_env.timestamp.saturating_to(),
+                ),
+            )
+            .expect("resolved network profile precompile composition must be compatible");
 
         if let Some(factory) = &self.precompile_factory {
             precompiles.extend_precompiles(factory.precompiles());
@@ -1158,7 +1174,7 @@ impl<N: Network> Backend<N> {
                 op_env,
                 inspector,
             );
-            self.inject_precompiles(evm.precompiles_mut());
+            self.inject_precompiles(evm.precompiles_mut(), evm_env);
             let result = evm.transact(OpTx(tx_env)).map_err(|e| match e {
                 EVMError::Database(db) => EVMError::Database(db),
                 EVMError::Header(h) => EVMError::Header(h),
@@ -1186,7 +1202,7 @@ impl<N: Network> Backend<N> {
                 evm_env.clone(),
                 inspector,
             );
-            self.inject_precompiles(evm.precompiles_mut());
+            self.inject_precompiles(evm.precompiles_mut(), evm_env);
             Ok(evm.transact(tx_env.base)?)
         }
     }
@@ -1250,7 +1266,7 @@ impl<N: Network> Backend<N> {
             tempo_env,
             inspector,
         );
-        self.inject_precompiles(evm.precompiles_mut());
+        self.inject_precompiles(evm.precompiles_mut(), evm_env);
         let result = evm.transact(tx_env)?;
         Ok(ResultAndState {
             result: result.result.map_haltreason(|h| match h {
@@ -1285,7 +1301,7 @@ impl<N: Network> Backend<N> {
 
         macro_rules! run {
             ($evm:expr) => {{
-                self.inject_precompiles($evm.precompiles_mut());
+                self.inject_precompiles($evm.precompiles_mut(), evm_env);
                 let mut executor = AnvilBlockExecutor::new($evm, parent_hash, spec_id);
                 executor.apply_pre_execution_changes().expect("pre-execution changes failed");
                 let pool_result = execute_pool_transactions(
@@ -1898,7 +1914,7 @@ impl<N: Network> Backend<N> {
     pub async fn with_genesis(
         db: Arc<AsyncRwLock<Box<dyn Db>>>,
         env: Arc<RwLock<EvmEnv>>,
-        networks: NetworkConfigs,
+        network_profile: ResolvedNetworkProfile,
         genesis: GenesisConfig,
         fees: FeeManager,
         fork: Arc<RwLock<Option<ClientFork>>>,
@@ -1963,7 +1979,7 @@ impl<N: Network> Backend<N> {
                 cfg.slots_in_an_epoch,
                 cfg.precompile_factory.clone(),
                 cfg.disable_pool_balance_checks,
-                cfg.get_hardfork(),
+                cfg.get_hardfork_with_network_profile(network_profile),
             )
         };
 
@@ -1972,7 +1988,7 @@ impl<N: Network> Backend<N> {
             blockchain,
             states: Arc::new(RwLock::new(states)),
             evm_env: env,
-            networks,
+            network_profile,
             hardfork,
             fork,
             time: TimeManager::new(start_timestamp),
@@ -2058,7 +2074,7 @@ impl<N: Network> Backend<N> {
 
         // Initialize Tempo precompiles and fee tokens when in Tempo mode (not in fork mode).
         // In fork mode, precompiles are inherited from the forked origin.
-        if self.networks.is_tempo() && !self.is_fork() {
+        if self.network_profile.state_plan() == NetworkStatePlan::Tempo && !self.is_fork() {
             let chain_id = self.evm_env.read().cfg_env.chain_id;
             let timestamp = self.genesis.timestamp;
             let test_accounts: Vec<Address> = self.genesis.accounts.clone();
@@ -2097,7 +2113,14 @@ impl<N: Network> Backend<N> {
                     node_config.base_fee.take();
                     node_config.fork_urls = vec![eth_rpc_url.clone()];
 
-                    node_config.setup_fork_db_config(eth_rpc_url, &mut evm_env, &self.fees).await?
+                    node_config
+                        .setup_fork_db_config_with_network_profile(
+                            eth_rpc_url,
+                            &mut evm_env,
+                            &self.fees,
+                            self.network_profile,
+                        )
+                        .await?
                 };
 
                 *self.db.write().await = Box::new(db);
@@ -2253,8 +2276,14 @@ impl<N: Network> Backend<N> {
         node_config.fork_urls = vec![fork_url.clone()];
 
         let mut evm_env = self.evm_env.read().clone();
-        let (forked_db, client_fork_config) =
-            node_config.setup_fork_db_config(fork_url, &mut evm_env, &self.fees).await?;
+        let (forked_db, client_fork_config) = node_config
+            .setup_fork_db_config_with_network_profile(
+                fork_url,
+                &mut evm_env,
+                &self.fees,
+                self.network_profile,
+            )
+            .await?;
 
         *self.db.write().await = Box::new(forked_db);
         let fork = ClientFork::new(client_fork_config, Arc::clone(&self.db));
@@ -4727,6 +4756,52 @@ pub use foundry_evm::core::evm::IntoInstructionResult;
 #[cfg(test)]
 mod tests {
     use crate::{NodeConfig, spawn};
+    use alloy_primitives::Bytes;
+    use alloy_rpc_types::anvil::Forking;
+    use foundry_evm_networks::NetworkConfigs;
+
+    #[cfg(feature = "hashkey")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn anvil_preserves_resolved_profile_across_standalone_and_reset_fork() {
+        let network_profile = NetworkConfigs::with_hashkey().resolve();
+        let (_origin_api, origin_handle) = spawn(NodeConfig::test()).await;
+        let (api, _handle) =
+            spawn(NodeConfig::test().with_networks(NetworkConfigs::with_hashkey())).await;
+
+        assert_eq!(api.backend.network_profile(), network_profile);
+        assert_eq!(api.backend.as_ref().clone().network_profile(), network_profile);
+        assert!(api.backend.is_optimism());
+        assert_eq!(
+            api.backend.fees().base_fee_params(),
+            network_profile.base_fee_params(api.backend.genesis_time())
+        );
+
+        let inventory = network_profile.precompile_inventory(None);
+        assert_eq!(api.backend.precompiles().get("B20Factory"), inventory.get("B20Factory"));
+
+        api.anvil_reset(Some(Forking {
+            json_rpc_url: Some(origin_handle.http_endpoint()),
+            block_number: None,
+        }))
+        .await
+        .unwrap();
+
+        assert!(api.backend.is_fork());
+        assert_eq!(api.backend.network_profile(), network_profile);
+        let factory = *inventory.get("B20Factory").unwrap();
+        assert_eq!(api.get_code(factory, None).await.unwrap(), Bytes::new());
+
+        api.anvil_reset(Some(Forking::default())).await.unwrap();
+
+        assert!(api.backend.is_fork());
+        assert_eq!(api.backend.network_profile(), network_profile);
+        assert_eq!(api.get_code(factory, None).await.unwrap(), Bytes::new());
+
+        api.anvil_reset(None).await.unwrap();
+
+        assert!(!api.backend.is_fork());
+        assert_eq!(api.backend.network_profile(), network_profile);
+    }
 
     #[tokio::test]
     async fn test_deterministic_block_mining() {

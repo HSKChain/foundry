@@ -72,7 +72,7 @@ use foundry_evm::{
     traces::{CallTraceDecoderBuilder, identifier::SignaturesIdentifier},
     utils::get_blob_params,
 };
-use foundry_evm_networks::NetworkConfigs;
+use foundry_evm_networks::{NetworkConfigs, ResolvedNetworkProfile};
 
 /// Default port the rpc will open
 pub const NODE_PORT: u16 = 8545;
@@ -532,8 +532,14 @@ impl NodeConfig {
     ///
     /// In Tempo mode, uses the hardfork-specific base fee (10 gwei pre-T1, 20 gwei T1+).
     pub fn get_base_fee(&self) -> u64 {
-        let default = if self.networks.is_tempo() {
-            tempo_default_base_fee(TempoHardfork::from(self.get_hardfork()))
+        self.get_base_fee_with_network_profile(self.networks.resolve())
+    }
+
+    fn get_base_fee_with_network_profile(&self, network_profile: ResolvedNetworkProfile) -> u64 {
+        let default = if network_profile.is_tempo() {
+            tempo_default_base_fee(TempoHardfork::from(
+                self.get_hardfork_with_network_profile(network_profile),
+            ))
         } else {
             INITIAL_BASE_FEE
         };
@@ -546,8 +552,14 @@ impl NodeConfig {
     ///
     /// In Tempo mode, defaults to the hardfork-specific base fee.
     pub fn get_gas_price(&self) -> u128 {
-        let default = if self.networks.is_tempo() {
-            tempo_default_base_fee(TempoHardfork::from(self.get_hardfork())) as u128
+        self.get_gas_price_with_network_profile(self.networks.resolve())
+    }
+
+    fn get_gas_price_with_network_profile(&self, network_profile: ResolvedNetworkProfile) -> u128 {
+        let default = if network_profile.is_tempo() {
+            tempo_default_base_fee(TempoHardfork::from(
+                self.get_hardfork_with_network_profile(network_profile),
+            )) as u128
         } else {
             INITIAL_GAS_PRICE
         };
@@ -577,13 +589,20 @@ impl NodeConfig {
 
     /// Returns the hardfork to use
     pub fn get_hardfork(&self) -> FoundryHardfork {
+        self.get_hardfork_with_network_profile(self.networks.resolve())
+    }
+
+    pub(crate) fn get_hardfork_with_network_profile(
+        &self,
+        network_profile: ResolvedNetworkProfile,
+    ) -> FoundryHardfork {
         if let Some(hardfork) = self.hardfork {
             return hardfork;
         }
-        if self.networks.is_optimism() {
+        if network_profile.is_optimism() {
             return OpHardfork::default().into();
         }
-        if self.networks.is_tempo() {
+        if network_profile.is_tempo() {
             return TempoHardfork::default().into();
         }
         EthereumHardfork::default().into()
@@ -1122,9 +1141,10 @@ impl NodeConfig {
             >,
     {
         // configure the revm environment
+        let network_profile = self.networks.resolve();
 
         let mut cfg = CfgEnv::default();
-        cfg.spec = self.get_hardfork().into();
+        cfg.spec = self.get_hardfork_with_network_profile(network_profile).into();
 
         cfg.chain_id = self.get_chain_id();
         cfg.limit_contract_code_size = self.code_size_limit;
@@ -1147,19 +1167,19 @@ impl NodeConfig {
             cfg,
             BlockEnv {
                 gas_limit: self.gas_limit(),
-                basefee: self.get_base_fee(),
+                basefee: self.get_base_fee_with_network_profile(network_profile),
                 ..Default::default()
             },
         );
 
         let base_fee_params: BaseFeeParams =
-            self.networks.base_fee_params(self.get_genesis_timestamp());
+            network_profile.base_fee_params(self.get_genesis_timestamp());
 
         let fees = FeeManager::new(
             spec_id,
-            self.get_base_fee(),
+            self.get_base_fee_with_network_profile(network_profile),
             !self.disable_min_priority_fee,
-            self.get_gas_price(),
+            self.get_gas_price_with_network_profile(network_profile),
             self.get_blob_excess_gas_and_price(),
             self.get_blob_params(),
             base_fee_params,
@@ -1167,7 +1187,13 @@ impl NodeConfig {
 
         let (db, fork): (Arc<TokioRwLock<Box<dyn Db>>>, Option<ClientFork>) =
             if let Some(eth_rpc_url) = self.fork_urls.first().cloned() {
-                self.setup_fork_db(eth_rpc_url, &mut evm_env, &fees).await?
+                self.setup_fork_db_with_network_profile(
+                    eth_rpc_url,
+                    &mut evm_env,
+                    &fees,
+                    network_profile,
+                )
+                .await?
             } else {
                 (Arc::new(TokioRwLock::new(Box::<MemDb>::default())), None)
             };
@@ -1210,7 +1236,7 @@ impl NodeConfig {
         let backend = mem::Backend::with_genesis(
             db,
             Arc::new(RwLock::new(evm_env)),
-            self.networks,
+            network_profile,
             genesis,
             fees,
             Arc::new(RwLock::new(fork)),
@@ -1251,7 +1277,21 @@ impl NodeConfig {
         evm_env: &mut EvmEnv,
         fees: &FeeManager,
     ) -> Result<(Arc<TokioRwLock<Box<dyn Db>>>, Option<ClientFork>)> {
-        let (db, config) = self.setup_fork_db_config(eth_rpc_url, evm_env, fees).await?;
+        self.setup_fork_db_with_network_profile(eth_rpc_url, evm_env, fees, self.networks.resolve())
+            .await
+    }
+
+    /// Configures a fork with an already resolved network profile.
+    pub async fn setup_fork_db_with_network_profile(
+        &mut self,
+        eth_rpc_url: String,
+        evm_env: &mut EvmEnv,
+        fees: &FeeManager,
+        network_profile: ResolvedNetworkProfile,
+    ) -> Result<(Arc<TokioRwLock<Box<dyn Db>>>, Option<ClientFork>)> {
+        let (db, config) = self
+            .setup_fork_db_config_with_network_profile(eth_rpc_url, evm_env, fees, network_profile)
+            .await?;
         let db: Arc<TokioRwLock<Box<dyn Db>>> = Arc::new(TokioRwLock::new(Box::new(db)));
         let fork = ClientFork::new(config, Arc::clone(&db));
         Ok((db, Some(fork)))
@@ -1267,6 +1307,23 @@ impl NodeConfig {
         eth_rpc_url: String,
         evm_env: &mut EvmEnv,
         fees: &FeeManager,
+    ) -> Result<(ForkedDatabase<AnyNetwork>, ClientForkConfig)> {
+        self.setup_fork_db_config_with_network_profile(
+            eth_rpc_url,
+            evm_env,
+            fees,
+            self.networks.resolve(),
+        )
+        .await
+    }
+
+    /// Configures fork state with an already resolved network profile.
+    pub async fn setup_fork_db_config_with_network_profile(
+        &mut self,
+        eth_rpc_url: String,
+        evm_env: &mut EvmEnv,
+        fees: &FeeManager,
+        network_profile: ResolvedNetworkProfile,
     ) -> Result<(ForkedDatabase<AnyNetwork>, ClientForkConfig)> {
         debug!(target: "node", ?eth_rpc_url, "setting up fork db");
 
@@ -1424,7 +1481,7 @@ latest block number: {latest_block}"
         apply_chain_and_block_specific_env_changes::<AnyNetwork, _, _>(
             evm_env,
             &block,
-            self.networks.resolve(),
+            network_profile,
         );
 
         let meta = BlockchainDbMeta::new(evm_env.block_env.clone(), eth_rpc_url.clone());
