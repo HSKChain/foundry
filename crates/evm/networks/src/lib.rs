@@ -20,6 +20,25 @@ use std::collections::BTreeMap;
 
 pub mod celo;
 
+#[cfg(feature = "hashkey")]
+#[allow(dead_code)]
+fn hashkey_b20_type_identity_probe(
+    precompiles: &mut PrecompilesMap,
+    activation_admin: Option<Address>,
+) {
+    use hsk_b20_config::B20Config;
+    use hsk_b20_precompiles::{
+        ActivationRegistry, B20Factory, B20Spec, BerylLookup, NoopPrecompileCallObserver,
+        PolicyRegistryPrecompile,
+    };
+
+    let _config = B20Config::DISABLED;
+    B20Factory::install_with_observer(precompiles, B20Spec::Beryl, NoopPrecompileCallObserver);
+    PolicyRegistryPrecompile::install(precompiles, B20Spec::Beryl);
+    ActivationRegistry::install(precompiles, activation_admin);
+    BerylLookup::install(precompiles);
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "lowercase")]
 #[clap(rename_all = "lowercase")]
@@ -246,6 +265,15 @@ impl NetworkConfigs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "hashkey")]
+    #[test]
+    fn hashkey_b20_packages_share_precompiles_map_type() {
+        use revm::precompile::Precompiles;
+
+        let mut precompiles = PrecompilesMap::from_static(Precompiles::cancun());
+        hashkey_b20_type_identity_probe(&mut precompiles, None);
+    }
 
     // --- Equivalence: new flag == legacy flag ---
 

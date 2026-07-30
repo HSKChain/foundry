@@ -1,6 +1,7 @@
 use super::{
-    Cheatcodes, CheatsConfig, ChiselState, CustomPrintTracer, Fuzzer, LineCoverageCollector,
-    LogCollector, RevertDiagnostic, ScriptExecutionInspector, TempoLabels, TracingInspector,
+    Cheatcodes, CheatsConfig, ChiselState, CustomPrintTracer, EdgeCovInspector, Fuzzer,
+    LineCoverageCollector, LogCollector, RevertDiagnostic, ScriptExecutionInspector, TempoLabels,
+    TracingInspector,
 };
 use alloy_primitives::{
     Address, B256, Bytes, Log, TxKind, U256,
@@ -30,7 +31,6 @@ use revm::{
     },
     context_interface::CreateScheme,
     handler::FrameResult,
-    inspector::JournalExt,
     interpreter::{
         CallInputs, CallOutcome, CallScheme, CreateInputs, CreateOutcome, FrameInput, Gas,
         InstructionResult, Interpreter, InterpreterResult, return_ok,
@@ -38,7 +38,6 @@ use revm::{
     primitives::KECCAK_EMPTY,
     state::{Account, AccountStatus},
 };
-use revm_inspectors::edge_cov::EdgeCovInspector;
 use std::{
     ops::{Deref, DerefMut},
     sync::Arc,
@@ -1210,6 +1209,7 @@ impl<FEN: FoundryEvmNetwork> Inspector<FoundryContextFor<'_, FEN>>
                         memory_offset: call.return_memory_offset.clone(),
                         was_precompile_called: true,
                         precompile_call_logs: vec![],
+                        charged_new_account_state_gas: false,
                     });
                 }
                 // Mark accounts and storage cold before STATICCALLs

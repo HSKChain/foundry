@@ -1239,7 +1239,11 @@ impl<N: Network> Backend<N> {
         let hardfork = TempoHardfork::from(self.hardfork);
         let tempo_env = EvmEnv::new(
             evm_env.cfg_env.clone().with_spec_and_gas_params(hardfork, tempo_gas_params(hardfork)),
-            TempoBlockEnv { inner: evm_env.block_env.clone(), timestamp_millis_part: 0 },
+            TempoBlockEnv {
+                inner: evm_env.block_env.clone(),
+                timestamp_millis_part: 0,
+                ..Default::default()
+            },
         );
         let mut evm = TempoEvmFactory::default().create_evm_with_inspector(
             WrapDatabaseRef(db),
@@ -1313,7 +1317,11 @@ impl<N: Network> Backend<N> {
                     .cfg_env
                     .clone()
                     .with_spec_and_gas_params(hardfork, tempo_gas_params(hardfork)),
-                TempoBlockEnv { inner: evm_env.block_env.clone(), timestamp_millis_part: 0 },
+                TempoBlockEnv {
+                    inner: evm_env.block_env.clone(),
+                    timestamp_millis_part: 0,
+                    ..Default::default()
+                },
             );
             let mut evm =
                 TempoEvmFactory::default().create_evm_with_inspector(db, tempo_env, inspector);
@@ -1483,13 +1491,14 @@ impl<N: Network> Backend<N> {
                     // manager needs a non-zero hash; the actual value doesn't matter
                     // because the state is discarded after estimation.
                     let estimation_hash = keccak256(base.data.as_ref());
+                    tempo_tx.unique_tx_identifier = Some(estimation_hash);
                     tempo_tx.tempo_tx_env = Some(Box::new(TempoBatchCallEnv {
                         nonce_key,
                         valid_before,
                         valid_after,
                         aa_calls: vec![Call { to: base.kind, value: base.value, input: base.data }],
                         tx_hash: estimation_hash,
-                        expiring_nonce_hash: Some(estimation_hash),
+                        expiring_nonce_idx: Some(0),
                         ..Default::default()
                     }));
                 }

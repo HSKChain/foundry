@@ -13,7 +13,7 @@ use revm::{
     state::Bytecode,
 };
 use tempo_evm::{TempoBlockEnv, TempoEvmFactory, TempoHaltReason, evm::TempoEvm};
-use tempo_precompiles::storage::StorageCtx;
+use tempo_precompiles::storage::{StorageActions, StorageCtx};
 use tempo_revm::{
     TempoInvalidTransaction, TempoTxEnv, evm::TempoContext, gas_params::tempo_gas_params,
     handler::TempoEvmHandler,
@@ -46,21 +46,28 @@ pub(crate) fn initialize_tempo_evm<
     is_forked: bool,
 ) {
     let ctx = evm.ctx_mut();
-    StorageCtx::enter_evm(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx, || {
-        if is_forked {
-            // In fork mode, warm up precompile accounts to avoid repeated RPC fetches.
-            let mut sctx = StorageCtx;
-            let sentinel = Bytecode::new_legacy(Bytes::from_static(&[0xef]));
-            for addr in TEMPO_PRECOMPILE_ADDRESSES.iter().chain(TEMPO_TIP20_TOKENS.iter()) {
-                sctx.set_code(*addr, sentinel.clone())
-                    .expect("failed to warm tempo precompile address");
+    StorageCtx::enter_evm(
+        &mut ctx.journaled_state,
+        &ctx.block,
+        &ctx.cfg,
+        &ctx.tx,
+        StorageActions::disabled(),
+        || {
+            if is_forked {
+                // In fork mode, warm up precompile accounts to avoid repeated RPC fetches.
+                let mut sctx = StorageCtx;
+                let sentinel = Bytecode::new_legacy(Bytes::from_static(&[0xef]));
+                for addr in TEMPO_PRECOMPILE_ADDRESSES.iter().chain(TEMPO_TIP20_TOKENS.iter()) {
+                    sctx.set_code(*addr, sentinel.clone())
+                        .expect("failed to warm tempo precompile address");
+                }
+            } else {
+                // In non-fork mode, run full genesis initialization.
+                initialize_tempo_genesis_inner(TEST_CONTRACT_ADDRESS, CALLER)
+                    .expect("tempo genesis initialization failed");
             }
-        } else {
-            // In non-fork mode, run full genesis initialization.
-            initialize_tempo_genesis_inner(TEST_CONTRACT_ADDRESS, CALLER)
-                .expect("tempo genesis initialization failed");
-        }
-    });
+        },
+    );
 }
 
 impl FoundryEvmFactory for TempoEvmFactory {
@@ -134,6 +141,7 @@ impl<'db, I: FoundryInspectorExt<TempoContext<&'db mut dyn DatabaseExt<TempoEvmF
 
     fn run_execution(&mut self, frame: FrameInput) -> Result<FrameResult, EVMError<DatabaseError>> {
         let mut handler = TempoEvmHandler::new();
+        let reservoir = frame.reservoir();
 
         let memory =
             SharedMemory::new_with_buffer(self.ctx_ref().local().shared_memory_buffer().clone());
@@ -142,7 +150,7 @@ impl<'db, I: FoundryInspectorExt<TempoContext<&'db mut dyn DatabaseExt<TempoEvmF
         let mut frame_result =
             handler.inspect_run_exec_loop(self, first_frame_input).map_err(map_tempo_error)?;
 
-        handler.last_frame_result(self, &mut frame_result).map_err(map_tempo_error)?;
+        handler.last_frame_result(self, reservoir, &mut frame_result).map_err(map_tempo_error)?;
 
         Ok(frame_result)
     }
