@@ -5714,6 +5714,7 @@ dependencies = [
  "revm",
  "serde",
  "serde_json",
+ "tempo-contracts",
 ]
 
 [[package]]

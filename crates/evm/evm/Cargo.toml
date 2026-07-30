@@ -61,3 +61,10 @@ serde.workspace = true
 uuid.workspace = true
 rayon.workspace = true
 tokio.workspace = true
+
+[features]
+hashkey = [
+    "foundry-config/hashkey",
+    "foundry-evm-core/hashkey",
+    "foundry-evm-networks/hashkey",
+]

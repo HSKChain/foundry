@@ -15,7 +15,7 @@ workspace = true
 
 [features]
 default = []
-hashkey = ["foundry-evm-networks/hashkey"]
+hashkey = ["foundry-config/hashkey", "foundry-evm-networks/hashkey"]
 
 [dependencies]
 foundry-cheatcodes-spec.workspace = true

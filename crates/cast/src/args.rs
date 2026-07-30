@@ -28,7 +28,7 @@ use foundry_common::{
     },
     shell, stdin,
 };
-use foundry_evm_networks::NetworkVariant;
+use foundry_evm_networks::{EvmFamily, NetworkConfigs};
 use op_alloy_network::Optimism;
 use std::time::Instant;
 use tempo_alloy::TempoNetwork;
@@ -350,8 +350,8 @@ pub async fn run_command(args: CastArgs) -> Result<()> {
             let config = rpc.load_config()?;
             // Can use either --raw or specify raw as a field
             let output = if raw || fields.contains(&"raw".into()) {
-                match network {
-                    Some(NetworkVariant::Optimism) => {
+                match network.map(NetworkConfigs::from).unwrap_or_default().resolve().evm_family() {
+                    EvmFamily::Optimism => {
                         let provider =
                             ProviderBuilder::<Optimism>::from_config(&config)?.build()?;
 
@@ -359,7 +359,7 @@ pub async fn run_command(args: CastArgs) -> Result<()> {
                             .block_raw(block.unwrap_or(BlockId::Number(Latest)), full)
                             .await?
                     }
-                    Some(NetworkVariant::Tempo) => {
+                    EvmFamily::Tempo => {
                         let provider =
                             ProviderBuilder::<TempoNetwork>::from_config(&config)?.build()?;
                         Cast::new(&provider)
@@ -367,7 +367,7 @@ pub async fn run_command(args: CastArgs) -> Result<()> {
                             .await?
                     }
                     // Ethereum (default) or no --raw flag
-                    _ => {
+                    EvmFamily::Ethereum => {
                         let provider =
                             ProviderBuilder::<Ethereum>::from_config(&config)?.build()?;
                         Cast::new(&provider)
@@ -568,15 +568,20 @@ pub async fn run_command(args: CastArgs) -> Result<()> {
             let config = rpc.load_config()?;
             // Can use either --raw or specify raw as a field
             let is_raw = raw || field.as_ref().is_some_and(|f| f == "raw");
-            let output = match network {
-                Some(NetworkVariant::Optimism) => {
+            let output = match network
+                .map(NetworkConfigs::from)
+                .unwrap_or_default()
+                .resolve()
+                .evm_family()
+            {
+                EvmFamily::Optimism => {
                     let provider = ProviderBuilder::<Optimism>::from_config(&config)?.build()?;
 
                     Cast::new(&provider)
                         .transaction(tx_hash, from, nonce, field, is_raw, to_request)
                         .await?
                 }
-                Some(NetworkVariant::Tempo) => {
+                EvmFamily::Tempo => {
                     let provider =
                         ProviderBuilder::<TempoNetwork>::from_config(&config)?.build()?;
                     Cast::new(&provider)
@@ -584,7 +589,7 @@ pub async fn run_command(args: CastArgs) -> Result<()> {
                         .await?
                 }
                 // Ethereum (default) or no --raw flag
-                _ => {
+                EvmFamily::Ethereum => {
                     let provider = utils::get_provider(&config)?;
                     Cast::new(&provider)
                         .transaction(tx_hash, from, nonce, field, is_raw, to_request)
@@ -790,14 +795,15 @@ pub async fn run_command(args: CastArgs) -> Result<()> {
         CastSubcommand::Logs(cmd) => cmd.run().await?,
         CastSubcommand::DecodeTransaction { tx, network } => {
             let tx = stdin::unwrap_line(tx)?;
-            let decoded_tx = match network {
-                Some(NetworkVariant::Optimism) => {
-                    SimpleCast::decode_raw_transaction::<Optimism>(&tx)?
-                }
-                Some(NetworkVariant::Tempo) => {
-                    SimpleCast::decode_raw_transaction::<TempoNetwork>(&tx)?
-                }
-                _ => SimpleCast::decode_raw_transaction::<Ethereum>(&tx)?,
+            let decoded_tx = match network
+                .map(NetworkConfigs::from)
+                .unwrap_or_default()
+                .resolve()
+                .evm_family()
+            {
+                EvmFamily::Optimism => SimpleCast::decode_raw_transaction::<Optimism>(&tx)?,
+                EvmFamily::Tempo => SimpleCast::decode_raw_transaction::<TempoNetwork>(&tx)?,
+                EvmFamily::Ethereum => SimpleCast::decode_raw_transaction::<Ethereum>(&tx)?,
             };
             sh_println!("{}", serde_json::to_string_pretty(&decoded_tx)?)?;
         }
