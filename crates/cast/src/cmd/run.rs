@@ -216,7 +216,7 @@ impl RunArgs {
             apply_chain_and_block_specific_env_changes::<FEN::Network, _, _>(
                 &mut evm_env,
                 block,
-                config.networks,
+                config.networks.resolve(),
             );
         }
 

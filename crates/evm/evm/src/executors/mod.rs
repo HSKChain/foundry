@@ -31,10 +31,11 @@ use foundry_evm_core::{
     utils::StateChangeset,
 };
 use foundry_evm_coverage::HitMaps;
+use foundry_evm_networks::NetworkExecutionContext;
 use foundry_evm_traces::{SparsedTraceArena, TraceMode};
 use revm::{
     bytecode::Bytecode,
-    context::Transaction,
+    context::{Block, Transaction},
     context_interface::{
         result::{ExecutionResult, Output, ResultAndState},
         transaction::SignedAuthorization,
@@ -724,7 +725,11 @@ impl<FEN: FoundryEvmNetwork> Executor<FEN> {
         // Finally, resort to calling `DSTest::failed`.
         {
             // Construct a new bare-bones backend to evaluate success.
-            let mut backend = self.backend().clone_empty();
+            let mut backend =
+                self.backend().clone_empty_with_context(NetworkExecutionContext::new(
+                    self.evm_env.cfg_env.chain_id,
+                    self.evm_env.block_env.timestamp().saturating_to(),
+                ));
 
             // We only clone the test contract and cheatcode accounts,
             // that's all we need to evaluate success.

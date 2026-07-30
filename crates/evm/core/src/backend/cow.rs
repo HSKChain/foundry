@@ -134,6 +134,10 @@ impl<'a, FEN: FoundryEvmNetwork> CowBackend<'a, FEN> {
 }
 
 impl<FEN: FoundryEvmNetwork> DatabaseExt<FEN::EvmFactory> for CowBackend<'_, FEN> {
+    fn network_profile(&self) -> foundry_evm_networks::ResolvedNetworkProfile {
+        self.backend.network_profile()
+    }
+
     fn snapshot_state(
         &mut self,
         journaled_state: &JournaledState,

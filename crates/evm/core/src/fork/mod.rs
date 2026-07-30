@@ -1,4 +1,5 @@
 use super::opts::EvmOpts;
+use foundry_evm_networks::ResolvedNetworkProfile;
 
 pub mod database;
 
@@ -14,4 +15,6 @@ pub struct CreateFork {
     pub url: String,
     /// All env settings as configured by the user
     pub evm_opts: EvmOpts,
+    /// Immutable runtime network semantics inherited by this fork.
+    pub network_profile: ResolvedNetworkProfile,
 }

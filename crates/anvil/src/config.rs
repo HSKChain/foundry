@@ -1424,7 +1424,7 @@ latest block number: {latest_block}"
         apply_chain_and_block_specific_env_changes::<AnyNetwork, _, _>(
             evm_env,
             &block,
-            self.networks,
+            self.networks.resolve(),
         );
 
         let meta = BlockchainDbMeta::new(evm_env.block_env.clone(), eth_rpc_url.clone());

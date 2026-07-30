@@ -597,7 +597,10 @@ async fn create_fork<
     // Here we use [`AnyNetwork`] to maximize compatibility with custom chains, aligned with
     // `EvmOpts::env` impl.
     let any_provider = fork.evm_opts.fork_provider_with_url::<AnyNetwork>(&fork.url)?;
-    let (evm_env, number) = fork.evm_opts.fork_evm_env::<_, BLOCK, _, _>(&any_provider).await?;
+    let (evm_env, number) = fork
+        .evm_opts
+        .fork_evm_env_with_network_profile::<_, BLOCK, _, _>(&any_provider, fork.network_profile)
+        .await?;
     let meta = BlockchainDbMeta::new(evm_env.block_env.clone(), fork.url.clone());
 
     // Determine the cache path if caching is enabled.

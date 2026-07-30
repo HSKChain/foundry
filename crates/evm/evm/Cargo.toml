@@ -62,6 +62,9 @@ uuid.workspace = true
 rayon.workspace = true
 tokio.workspace = true
 
+[dev-dependencies]
+alloy-evm.workspace = true
+
 [features]
 hashkey = [
     "foundry-config/hashkey",

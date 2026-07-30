@@ -13,7 +13,7 @@ use alloy_rpc_types::{BlockNumberOrTag, anvil::NodeInfo};
 use eyre::WrapErr;
 use foundry_common::{ALCHEMY_FREE_TIER_CUPS, NON_ARCHIVE_NODE_WARNING, provider::ProviderBuilder};
 use foundry_config::{Chain, Config, GasLimit};
-use foundry_evm_networks::NetworkConfigs;
+use foundry_evm_networks::{NetworkConfigs, ResolvedNetworkProfile};
 use revm::{context::CfgEnv, primitives::hardfork::SpecId};
 use serde::{Deserialize, Serialize};
 use std::fmt::Write;
@@ -172,10 +172,24 @@ impl EvmOpts {
     >(
         &self,
     ) -> eyre::Result<(EvmEnv<SPEC, BLOCK>, TX, Option<BlockNumber>)> {
+        self.env_with_network_profile(self.networks.resolve()).await
+    }
+
+    /// Returns the EVM and transaction environments using an already resolved network profile.
+    pub async fn env_with_network_profile<
+        SPEC: Into<SpecId> + Default + Copy,
+        BLOCK: FoundryBlock + Default,
+        TX: FoundryTransaction + Default,
+    >(
+        &self,
+        network_profile: ResolvedNetworkProfile,
+    ) -> eyre::Result<(EvmEnv<SPEC, BLOCK>, TX, Option<BlockNumber>)> {
         if let Some(ref fork_url) = self.fork_url {
             let provider = self.fork_provider_with_url::<AnyNetwork>(fork_url)?;
-            let ((evm_env, block_number), tx) =
-                tokio::try_join!(self.fork_evm_env(&provider), self.fork_tx_env(&provider))?;
+            let ((evm_env, block_number), tx) = tokio::try_join!(
+                self.fork_evm_env_with_network_profile(&provider, network_profile),
+                self.fork_tx_env(&provider)
+            )?;
             Ok((evm_env, tx, Some(block_number)))
         } else {
             Ok((self.local_evm_env(), self.local_tx_env(), None))
@@ -192,6 +206,20 @@ impl EvmOpts {
     >(
         &self,
         provider: &P,
+    ) -> eyre::Result<(EvmEnv<SPEC, BLOCK>, BlockNumber)> {
+        self.fork_evm_env_with_network_profile(provider, self.networks.resolve()).await
+    }
+
+    /// Returns the fork EVM environment using an already resolved network profile.
+    pub async fn fork_evm_env_with_network_profile<
+        SPEC: Into<SpecId> + Default + Copy,
+        BLOCK: FoundryBlock + Default,
+        N: Network,
+        P: Provider<N>,
+    >(
+        &self,
+        provider: &P,
+        network_profile: ResolvedNetworkProfile,
     ) -> eyre::Result<(EvmEnv<SPEC, BLOCK>, BlockNumber)> {
         trace!(
             memory_limit = %self.memory_limit,
@@ -248,7 +276,11 @@ impl EvmOpts {
             block_env: block_env_from_header(block.header()),
         };
 
-        apply_chain_and_block_specific_env_changes::<N, _, _>(&mut evm_env, &block, self.networks);
+        apply_chain_and_block_specific_env_changes::<N, _, _>(
+            &mut evm_env,
+            &block,
+            network_profile,
+        );
 
         Ok((evm_env, block_number))
     }
@@ -340,6 +372,22 @@ impl EvmOpts {
         chain_id: u64,
         fork_block_number: Option<BlockNumber>,
     ) -> Option<CreateFork> {
+        self.get_fork_with_network_profile(
+            config,
+            chain_id,
+            fork_block_number,
+            self.networks.resolve(),
+        )
+    }
+
+    /// Returns a fork request carrying an already resolved runtime network profile.
+    pub fn get_fork_with_network_profile(
+        &self,
+        config: &Config,
+        chain_id: u64,
+        fork_block_number: Option<BlockNumber>,
+        network_profile: ResolvedNetworkProfile,
+    ) -> Option<CreateFork> {
         let url = self.fork_url.clone()?;
         let enable_caching = config.enable_caching(&url, chain_id);
 
@@ -349,7 +397,7 @@ impl EvmOpts {
         let mut evm_opts = self.clone();
         evm_opts.fork_block_number = evm_opts.fork_block_number.or(fork_block_number);
 
-        Some(CreateFork { url, enable_caching, evm_opts })
+        Some(CreateFork { url, enable_caching, evm_opts, network_profile })
     }
 
     /// Returns the gas limit to use
@@ -460,6 +508,22 @@ mod tests {
     use revm::context::{BlockEnv, TxEnv};
 
     use super::*;
+
+    #[test]
+    fn fork_request_preserves_caller_resolved_network_profile() {
+        let network_profile = NetworkConfigs::with_celo().resolve();
+        let evm_opts =
+            EvmOpts { fork_url: Some("http://127.0.0.1:1".to_string()), ..Default::default() };
+
+        let fork = evm_opts
+            .get_fork_with_network_profile(&Config::default(), 1, Some(123), network_profile)
+            .unwrap();
+        let rolled = fork.clone();
+
+        assert_eq!(fork.network_profile, network_profile);
+        assert_eq!(rolled.network_profile, network_profile);
+        assert_eq!(rolled.evm_opts.fork_block_number, Some(123));
+    }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn infer_network_default_anvil_selects_ethereum() {

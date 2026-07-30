@@ -293,7 +293,11 @@ pub fn configure_env_block(evm_env: &mut EvmEnv, block: &AnyRpcBlock, config: Ne
     let number = evm_env.block_env.number;
     evm_env.block_env = block_env_from_header(&block.header);
     evm_env.block_env.number = number;
-    apply_chain_and_block_specific_env_changes::<AnyNetwork, _, _>(evm_env, block, config);
+    apply_chain_and_block_specific_env_changes::<AnyNetwork, _, _>(
+        evm_env,
+        block,
+        config.resolve(),
+    );
 }
 
 pub fn deploy_contract(

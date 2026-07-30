@@ -6,7 +6,7 @@ use alloy_json_abi::{Function, JsonAbi};
 use alloy_primitives::{B256, ChainId, Selector, U256};
 use alloy_provider::{Network, network::BlockResponse};
 use foundry_config::NamedChain;
-use foundry_evm_networks::NetworkConfigs;
+use foundry_evm_networks::ResolvedNetworkProfile;
 use revm::primitives::{
     eip4844::{BLOB_BASE_FEE_UPDATE_FRACTION_CANCUN, BLOB_BASE_FEE_UPDATE_FRACTION_PRAGUE},
     hardfork::SpecId,
@@ -47,7 +47,7 @@ pub fn apply_chain_and_block_specific_env_changes<
 >(
     evm_env: &mut EvmEnv<SPEC, BLOCK>,
     block: &N::BlockResponse,
-    configs: NetworkConfigs,
+    network_profile: ResolvedNetworkProfile,
 ) {
     use NamedChain::{BinanceSmartChain, BinanceSmartChainTestnet, Mainnet};
 
@@ -92,7 +92,7 @@ pub fn apply_chain_and_block_specific_env_changes<
         }
     }
 
-    if configs.bypass_prevrandao(evm_env.cfg_env.chain_id)
+    if network_profile.bypass_prevrandao(evm_env.cfg_env.chain_id)
         && evm_env.block_env.prevrandao().is_none()
     {
         // <https://github.com/foundry-rs/foundry/issues/4232>

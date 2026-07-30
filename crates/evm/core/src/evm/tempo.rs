@@ -1,6 +1,7 @@
 use alloy_evm::{Evm, EvmEnv, EvmFactory};
 use alloy_primitives::Bytes;
 use foundry_evm_hardforks::TempoHardfork;
+use foundry_evm_networks::NetworkExecutionContext;
 use foundry_fork_db::DatabaseError;
 use revm::{
     context::{
@@ -84,6 +85,8 @@ impl FoundryEvmFactory for TempoEvmFactory {
     ) -> Self::FoundryEvm<'db, I> {
         let is_forked = db.is_forked_mode();
         let spec = *evm_env.spec_id();
+        let chain_id = evm_env.cfg_env.chain_id;
+        let timestamp = evm_env.block_env.timestamp.saturating_to();
         let mut tempo_evm = Self::default().create_evm_with_inspector(db, evm_env, inspector);
         tempo_evm.cfg.gas_params = tempo_gas_params(spec);
         tempo_evm.cfg.tx_chain_id_check = true;
@@ -91,8 +94,14 @@ impl FoundryEvmFactory for TempoEvmFactory {
             tempo_evm.cfg.tx_gas_limit_cap = spec.tx_gas_limit_cap();
         }
 
-        let networks = tempo_evm.inspector().get_networks();
-        networks.inject_precompiles(tempo_evm.precompiles_mut());
+        tempo_evm
+            .inspector()
+            .get_network_profile()
+            .inject_precompiles(
+                tempo_evm.precompiles_mut(),
+                NetworkExecutionContext::new(chain_id, timestamp),
+            )
+            .expect("resolved network profile precompile composition must be compatible");
 
         initialize_tempo_evm(&mut tempo_evm, is_forked);
         tempo_evm
