@@ -72,7 +72,7 @@ impl EdgeCovInspector {
 
         match interp.bytecode.opcode() {
             opcode::JUMP => {
-                // unconditional jump
+                // Unconditional jump.
                 if let Ok(jump_dest) = interp.stack.peek(0) {
                     self.store_hit(address, current_pc, jump_dest);
                 }
@@ -80,10 +80,10 @@ impl EdgeCovInspector {
             opcode::JUMPI => {
                 if let Ok(stack_value) = interp.stack.peek(1) {
                     let jump_dest = if stack_value.is_zero() {
-                        // fall through
+                        // Fall through.
                         Ok(U256::from(current_pc + 1))
                     } else {
-                        // branch taken
+                        // Branch taken.
                         interp.stack.peek(0)
                     };
 
@@ -93,7 +93,7 @@ impl EdgeCovInspector {
                 }
             }
             _ => {
-                // no-op
+                // No-op.
             }
         }
     }
@@ -111,5 +111,73 @@ impl<CTX> Inspector<CTX> for EdgeCovInspector {
         if matches!(interp.bytecode.opcode(), opcode::JUMP | opcode::JUMPI) {
             self.do_step(interp);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_primitives::Bytes;
+    use revm::bytecode::Bytecode;
+
+    fn interpreter_with_opcode(opcode: u8) -> Interpreter {
+        Interpreter::default().with_bytecode(Bytecode::new_raw(Bytes::from(vec![opcode])))
+    }
+
+    fn nonzero_hitcounts(inspector: &EdgeCovInspector) -> usize {
+        inspector.get_hitcount().iter().filter(|&&count| count != 0).count()
+    }
+
+    #[test]
+    fn jump_records_edge() {
+        let mut inspector = EdgeCovInspector::new();
+        let mut interpreter = interpreter_with_opcode(opcode::JUMP);
+        assert!(interpreter.stack.push(U256::from(7)));
+
+        inspector.do_step(&mut interpreter);
+
+        assert_eq!(nonzero_hitcounts(&inspector), 1);
+    }
+
+    #[test]
+    fn jumpi_records_taken_and_fallthrough_edges() {
+        let mut taken = EdgeCovInspector::new();
+        let mut taken_interpreter = interpreter_with_opcode(opcode::JUMPI);
+        assert!(taken_interpreter.stack.push(U256::from(1)));
+        assert!(taken_interpreter.stack.push(U256::from(7)));
+
+        taken.do_step(&mut taken_interpreter);
+
+        let mut fallthrough = EdgeCovInspector::new();
+        let mut fallthrough_interpreter = interpreter_with_opcode(opcode::JUMPI);
+        assert!(fallthrough_interpreter.stack.push(U256::ZERO));
+        assert!(fallthrough_interpreter.stack.push(U256::from(7)));
+
+        fallthrough.do_step(&mut fallthrough_interpreter);
+
+        assert_eq!(nonzero_hitcounts(&taken), 1);
+        assert_eq!(nonzero_hitcounts(&fallthrough), 1);
+    }
+
+    #[test]
+    fn reset_clears_hitcounts() {
+        let mut inspector = EdgeCovInspector::new();
+        inspector.store_hit(Address::ZERO, 0, U256::from(1));
+
+        inspector.reset();
+
+        assert_eq!(nonzero_hitcounts(&inspector), 0);
+    }
+
+    #[test]
+    fn hitcount_never_wraps_to_zero() {
+        let mut inspector = EdgeCovInspector::new();
+
+        for _ in 0..=u8::MAX {
+            inspector.store_hit(Address::ZERO, 0, U256::from(1));
+        }
+
+        assert_eq!(nonzero_hitcounts(&inspector), 1);
+        assert_eq!(inspector.get_hitcount().iter().copied().max(), Some(1));
     }
 }

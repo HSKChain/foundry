@@ -43,6 +43,7 @@ revm = { workspace = true, features = [
     "blst",
 ] }
 
+# hashkey
 hsk-b20-config = { workspace = true, optional = true }
 hsk-b20-precompiles = { workspace = true, optional = true }
 

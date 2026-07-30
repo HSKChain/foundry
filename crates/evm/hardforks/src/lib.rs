@@ -322,8 +322,16 @@ mod tests {
     fn test_ethereum_spec_id_mapping() {
         assert_eq!(spec_id_from_ethereum_hardfork(EthereumHardfork::Frontier), SpecId::FRONTIER);
         assert_eq!(spec_id_from_ethereum_hardfork(EthereumHardfork::Homestead), SpecId::HOMESTEAD);
+        assert_eq!(spec_id_from_ethereum_hardfork(EthereumHardfork::Dao), SpecId::HOMESTEAD);
+        assert_eq!(
+            spec_id_from_ethereum_hardfork(EthereumHardfork::Constantinople),
+            SpecId::PETERSBURG
+        );
+        assert_eq!(spec_id_from_ethereum_hardfork(EthereumHardfork::MuirGlacier), SpecId::ISTANBUL);
+        assert_eq!(spec_id_from_ethereum_hardfork(EthereumHardfork::ArrowGlacier), SpecId::LONDON);
+        assert_eq!(spec_id_from_ethereum_hardfork(EthereumHardfork::GrayGlacier), SpecId::LONDON);
 
-        // Test latest hardforks
+        // Test latest hardforks.
         assert_eq!(spec_id_from_ethereum_hardfork(EthereumHardfork::Cancun), SpecId::CANCUN);
         assert_eq!(spec_id_from_ethereum_hardfork(EthereumHardfork::Prague), SpecId::PRAGUE);
         assert_eq!(spec_id_from_ethereum_hardfork(EthereumHardfork::Osaka), SpecId::OSAKA);
@@ -334,14 +342,14 @@ mod tests {
         assert_eq!(spec_id_from_optimism_hardfork(OpHardfork::Bedrock), OpSpecId::BEDROCK);
         assert_eq!(spec_id_from_optimism_hardfork(OpHardfork::Regolith), OpSpecId::REGOLITH);
 
-        // Test latest hardforks
+        // Test latest hardforks.
         assert_eq!(spec_id_from_optimism_hardfork(OpHardfork::Holocene), OpSpecId::HOLOCENE);
         assert_eq!(spec_id_from_optimism_hardfork(OpHardfork::Interop), OpSpecId::INTEROP);
     }
 
     #[test]
     fn test_tempo_spec_id_mapping() {
-        assert_eq!(SpecId::from(TempoHardfork::Genesis), SpecId::OSAKA);
+        assert_eq!(spec_id_from_tempo_hardfork(TempoHardfork::Genesis), SpecId::OSAKA);
     }
 
     #[test]

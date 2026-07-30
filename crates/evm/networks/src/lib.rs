@@ -15,6 +15,13 @@ use alloy_op_hardforks::{OpChainHardforks, OpHardforks};
 use alloy_primitives::{Address, ChainId, map::AddressHashMap};
 use clap::Parser;
 use foundry_evm_hardforks::FoundryHardfork;
+#[cfg(feature = "hashkey")]
+use hsk_b20_config::B20Config;
+#[cfg(feature = "hashkey")]
+use hsk_b20_precompiles::{
+    ActivationRegistry, B20Factory, B20Spec, BerylLookup, NoopPrecompileCallObserver,
+    PolicyRegistryPrecompile,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -26,12 +33,6 @@ fn hashkey_b20_type_identity_probe(
     precompiles: &mut PrecompilesMap,
     activation_admin: Option<Address>,
 ) {
-    use hsk_b20_config::B20Config;
-    use hsk_b20_precompiles::{
-        ActivationRegistry, B20Factory, B20Spec, BerylLookup, NoopPrecompileCallObserver,
-        PolicyRegistryPrecompile,
-    };
-
     let _config = B20Config::DISABLED;
     B20Factory::install_with_observer(precompiles, B20Spec::Beryl, NoopPrecompileCallObserver);
     PolicyRegistryPrecompile::install(precompiles, B20Spec::Beryl);
@@ -265,12 +266,12 @@ impl NetworkConfigs {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "hashkey")]
+    use revm::precompile::Precompiles;
 
     #[cfg(feature = "hashkey")]
     #[test]
     fn hashkey_b20_packages_share_precompiles_map_type() {
-        use revm::precompile::Precompiles;
-
         let mut precompiles = PrecompilesMap::from_static(Precompiles::cancun());
         hashkey_b20_type_identity_probe(&mut precompiles, None);
     }
