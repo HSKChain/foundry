@@ -16,16 +16,16 @@ use alloy_eips::eip1559::BaseFeeParams;
 use alloy_evm::precompiles::Precompile;
 use alloy_evm::precompiles::PrecompilesMap;
 use alloy_op_hardforks::{OpChainHardforks, OpHardforks};
-use alloy_primitives::{Address, ChainId, map::AddressHashMap};
+use alloy_primitives::{Address, B256, ChainId, map::AddressHashMap};
 #[cfg(feature = "hashkey")]
-use alloy_primitives::{B256, U256, keccak256};
+use alloy_primitives::{U256, keccak256};
 use clap::Parser;
 use foundry_evm_hardforks::{FoundryHardfork, TempoHardfork};
 #[cfg(feature = "hashkey")]
 use hsk_b20_config::B20Config;
 #[cfg(feature = "hashkey")]
 use hsk_b20_precompiles::{
-    ActivationFeature, ActivationRegistry, B20Factory, B20Spec, BerylLookup,
+    ActivationFeature, ActivationRegistry, B20Factory, B20Spec, B20Variant, BerylLookup,
     NoopPrecompileCallObserver, PolicyRegistryPrecompile,
 };
 use revm::precompile::PrecompileId;
@@ -376,6 +376,39 @@ impl ResolvedNetworkProfile {
     #[cfg(feature = "hashkey")]
     pub fn b20_genesis_alloc(self) -> Option<B20GenesisAlloc> {
         self.is_hashkey().then(B20GenesisAlloc::standalone_local)
+    }
+
+    /// Returns whether `address` is a fixed B20 singleton owned by this profile.
+    pub fn is_b20_singleton(self, address: Address) -> bool {
+        #[cfg(feature = "hashkey")]
+        {
+            self.is_hashkey()
+                && matches!(address, B20_FACTORY | B20_ACTIVATION_REGISTRY | B20_POLICY_REGISTRY)
+        }
+        #[cfg(not(feature = "hashkey"))]
+        {
+            let _ = (self, address);
+            false
+        }
+    }
+
+    /// Returns whether mutation cheatcodes must preserve the native B20 state at `address`.
+    pub fn protects_b20_native_state(self, address: Address, code_hash: B256) -> bool {
+        if self.is_b20_singleton(address) {
+            return true;
+        }
+
+        #[cfg(feature = "hashkey")]
+        {
+            self.is_hashkey()
+                && B20Variant::from_address(address).is_some()
+                && code_hash == keccak256([0xef])
+        }
+        #[cfg(not(feature = "hashkey"))]
+        {
+            let _ = code_hash;
+            false
+        }
     }
 
     /// Returns the state preparation plan for this profile.
@@ -906,6 +939,22 @@ mod tests {
     fn non_hashkey_profiles_have_no_b20_genesis_alloc() {
         assert!(NetworkConfigs::default().resolve().b20_genesis_alloc().is_none());
         assert!(NetworkConfigs::with_optimism().resolve().b20_genesis_alloc().is_none());
+    }
+
+    #[cfg(feature = "hashkey")]
+    #[test]
+    fn hashkey_profile_classifies_protected_b20_native_state() {
+        let profile = NetworkConfigs::with_hashkey().resolve();
+        let dynamic = B20Variant::Asset
+            .compute_address(Address::repeat_byte(0x11), B256::repeat_byte(0x22))
+            .0;
+
+        assert!(profile.is_b20_singleton(B20_FACTORY));
+        assert!(profile.protects_b20_native_state(B20_ACTIVATION_REGISTRY, B256::ZERO));
+        assert!(profile.protects_b20_native_state(dynamic, keccak256([0xef])));
+        assert!(!profile.protects_b20_native_state(dynamic, alloy_primitives::KECCAK256_EMPTY));
+        assert!(!profile.protects_b20_native_state(Address::repeat_byte(0x22), keccak256([0xef])));
+        assert!(!NetworkConfigs::default().resolve().is_b20_singleton(B20_FACTORY));
     }
 
     #[cfg(feature = "hashkey")]
