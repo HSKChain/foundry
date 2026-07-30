@@ -27,9 +27,11 @@ use foundry_evm::{
     opts::EvmOpts,
     traces::{InternalTraceMode, TraceMode},
 };
+use foundry_evm_networks::{NetworkExecutionContext, ResolvedNetworkProfile};
 
 use foundry_linking::{LinkOutput, Linker};
 use rayon::prelude::*;
+use revm::context::Block;
 use std::{
     borrow::Borrow,
     collections::BTreeMap,
@@ -181,7 +183,15 @@ impl<FEN: FoundryEvmNetwork> MultiContractRunner<FEN> {
         trace!("running all tests");
 
         // The DB backend that serves all the data.
-        let db = Backend::spawn(self.fork.take())?;
+        let network_context = NetworkExecutionContext::new(
+            self.tcfg.evm_env.cfg_env.chain_id,
+            self.tcfg.evm_env.block_env.timestamp().saturating_to(),
+        );
+        let db = Backend::spawn_with_network_profile(
+            self.fork.take(),
+            self.tcfg.network_profile,
+            network_context,
+        )?;
 
         let find_timer = Instant::now();
         let contracts = self.matching_contracts(filter).collect::<Vec<_>>();
@@ -292,6 +302,8 @@ pub struct TestRunnerConfig<FEN: FoundryEvmNetwork> {
 
     /// EVM configuration.
     pub evm_opts: EvmOpts,
+    /// Immutable runtime network profile.
+    pub network_profile: ResolvedNetworkProfile,
     /// EVM environment.
     pub evm_env: EvmEnvFor<FEN>,
     /// Transaction environment.
@@ -321,7 +333,6 @@ impl<FEN: FoundryEvmNetwork> TestRunnerConfig<FEN> {
 
         self.spec_id = config.evm_spec_id();
         self.sender = config.sender;
-        self.evm_opts.networks = config.networks;
         self.isolation = config.isolate;
 
         // Specific to Forge, not present in config.
@@ -350,7 +361,7 @@ impl<FEN: FoundryEvmNetwork> TestRunnerConfig<FEN> {
         inspector.tracing(self.trace_mode());
         inspector.collect_line_coverage(self.line_coverage);
         inspector.enable_isolation(self.isolation);
-        inspector.networks(self.evm_opts.networks);
+        inspector.network_profile(self.network_profile);
         // inspector.set_create2_deployer(self.evm_opts.create2_deployer);
 
         // executor.env_mut().clone_from(&self.env);
@@ -382,7 +393,7 @@ impl<FEN: FoundryEvmNetwork> TestRunnerConfig<FEN> {
                     .trace_mode(self.trace_mode())
                     .line_coverage(self.line_coverage)
                     .enable_isolation(self.isolation)
-                    .networks(self.evm_opts.networks)
+                    .network_profile(self.network_profile)
                     .create2_deployer(self.evm_opts.create2_deployer)
                     .set_analysis(analysis)
             })
@@ -488,6 +499,7 @@ impl MultiContractRunnerBuilder {
         evm_env: EvmEnvFor<FEN>,
         tx_env: TxEnvFor<FEN>,
         evm_opts: EvmOpts,
+        network_profile: ResolvedNetworkProfile,
     ) -> Result<MultiContractRunner<FEN>> {
         let root = &self.config.root;
         let contracts = output
@@ -584,6 +596,7 @@ impl MultiContractRunnerBuilder {
 
             tcfg: TestRunnerConfig {
                 evm_opts,
+                network_profile,
                 evm_env,
                 tx_env,
                 spec_id: self.config.evm_spec_id(),

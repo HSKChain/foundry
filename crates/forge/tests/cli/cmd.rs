@@ -988,6 +988,39 @@ forgetest!(network_flag_tempo_equivalent_to_legacy_tempo, |prj, cmd| {
     cmd.forge_fuse().args(["test", "--tempo"]).arg("--root").arg(prj.root()).assert_success();
 });
 
+#[cfg(feature = "hashkey")]
+forgetest!(network_profile_transport_default_and_hashkey, |prj, cmd| {
+    prj.add_test(
+        "ProfileTransport.t.sol",
+        r#"
+contract ProfileTransportTest {
+    address constant B20_FACTORY = 0xB20f000000000000000000000000000000000000;
+
+    function testDefaultEthereumDoesNotInstallB20() external view {
+        (bool ok,) = B20_FACTORY.staticcall("");
+        require(ok, "unexpected B20 precompile");
+    }
+}
+"#,
+    );
+    cmd.arg("test").assert_success();
+
+    prj.add_test(
+        "ProfileTransport.t.sol",
+        r#"
+contract ProfileTransportTest {
+    address constant B20_FACTORY = 0xB20f000000000000000000000000000000000000;
+
+    function testHashKeyInstallsB20() external view {
+        (bool ok,) = B20_FACTORY.staticcall("");
+        require(!ok, "missing B20 precompile");
+    }
+}
+"#,
+    );
+    cmd.forge_fuse().args(["test", "--network", "hashkey"]).assert_success();
+});
+
 // checks that clone works with raw src containing `node_modules`
 // <https://github.com/foundry-rs/foundry/issues/10115>
 forgetest!(flaky_can_clone_with_node_modules, |prj, cmd| {

@@ -47,6 +47,7 @@ use foundry_evm::{
     opts::EvmOpts,
     traces::{backtrace::BacktraceBuilder, identifier::TraceIdentifiers, prune_trace_depth},
 };
+use foundry_evm_networks::ResolvedNetworkProfile;
 use rand::Rng;
 use regex::Regex;
 use revm::context::Transaction;
@@ -65,6 +66,23 @@ use crate::{result::TestKind, traces::render_trace_arena_inner};
 pub use filter::FilterArgs;
 use quick_junit::{NonSuccessKind, Report, TestCase, TestCaseStatus, TestSuite};
 use summary::{TestSummaryReport, format_invariant_metrics_table};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NetworkDispatchKind {
+    Tempo,
+    Optimism,
+    Ethereum,
+}
+
+const fn network_dispatch_kind(profile: ResolvedNetworkProfile) -> NetworkDispatchKind {
+    if profile.is_tempo() {
+        NetworkDispatchKind::Tempo
+    } else if profile.is_optimism() {
+        NetworkDispatchKind::Optimism
+    } else {
+        NetworkDispatchKind::Ethereum
+    }
+}
 
 // Loads project's figment and merges the build cli arguments into it
 foundry_config::merge_impl_figment_convert!(TestArgs, build, evm);
@@ -341,41 +359,49 @@ impl TestArgs {
 
         // Auto-detect network from fork chain ID when not explicitly configured.
         evm_opts.infer_network_from_fork().await;
+        let network_profile = evm_opts.networks.resolve();
 
         // Dispatch based on network type.
-        let (libraries, mut outcome) = if evm_opts.networks.is_tempo() {
-            self.build_and_run_tests::<TempoEvmNetwork>(
-                config,
-                evm_opts,
-                output,
-                filter,
-                coverage,
-                should_debug,
-                decode_internal,
-            )
-            .await?
-        } else if evm_opts.networks.is_optimism() {
-            self.build_and_run_tests::<OpEvmNetwork>(
-                config,
-                evm_opts,
-                output,
-                filter,
-                coverage,
-                should_debug,
-                decode_internal,
-            )
-            .await?
-        } else {
-            self.build_and_run_tests::<EthEvmNetwork>(
-                config,
-                evm_opts,
-                output,
-                filter,
-                coverage,
-                should_debug,
-                decode_internal,
-            )
-            .await?
+        let (libraries, mut outcome) = match network_dispatch_kind(network_profile) {
+            NetworkDispatchKind::Tempo => {
+                self.build_and_run_tests::<TempoEvmNetwork>(
+                    config,
+                    evm_opts,
+                    network_profile,
+                    output,
+                    filter,
+                    coverage,
+                    should_debug,
+                    decode_internal,
+                )
+                .await?
+            }
+            NetworkDispatchKind::Optimism => {
+                self.build_and_run_tests::<OpEvmNetwork>(
+                    config,
+                    evm_opts,
+                    network_profile,
+                    output,
+                    filter,
+                    coverage,
+                    should_debug,
+                    decode_internal,
+                )
+                .await?
+            }
+            NetworkDispatchKind::Ethereum => {
+                self.build_and_run_tests::<EthEvmNetwork>(
+                    config,
+                    evm_opts,
+                    network_profile,
+                    output,
+                    filter,
+                    coverage,
+                    should_debug,
+                    decode_internal,
+                )
+                .await?
+            }
         };
 
         if should_draw {
@@ -456,6 +482,7 @@ impl TestArgs {
         &self,
         config: Config,
         evm_opts: EvmOpts,
+        network_profile: ResolvedNetworkProfile,
         output: &ProjectCompileOutput,
         filter: &ProjectPathsAwareFilter,
         coverage: bool,
@@ -463,8 +490,11 @@ impl TestArgs {
         decode_internal: InternalTraceMode,
     ) -> eyre::Result<(Libraries, TestOutcome)> {
         let verbosity = evm_opts.verbosity;
-        let (evm_env, tx_env, fork_block) =
-            evm_opts.env::<SpecFor<FEN>, BlockEnvFor<FEN>, TxEnvFor<FEN>>().await?;
+        let (evm_env, tx_env, fork_block) = evm_opts
+            .env_with_network_profile::<SpecFor<FEN>, BlockEnvFor<FEN>, TxEnvFor<FEN>>(
+                network_profile,
+            )
+            .await?;
 
         let config = Arc::new(config);
         let runner = MultiContractRunnerBuilder::new(config.clone())
@@ -472,11 +502,16 @@ impl TestArgs {
             .set_decode_internal(decode_internal)
             .initial_balance(evm_opts.initial_balance)
             .sender(evm_opts.sender)
-            .with_fork(evm_opts.get_fork(&config, evm_env.cfg_env.chain_id, fork_block))
+            .with_fork(evm_opts.get_fork_with_network_profile(
+                &config,
+                evm_env.cfg_env.chain_id,
+                fork_block,
+                network_profile,
+            ))
             .enable_isolation(evm_opts.isolate)
             .fail_fast(self.fail_fast)
             .set_coverage(coverage)
-            .build::<FEN, MultiCompiler>(output, evm_env, tx_env, evm_opts)?;
+            .build::<FEN, MultiCompiler>(output, evm_env, tx_env, evm_opts, network_profile)?;
 
         let libraries = runner.libraries.clone();
         let outcome = self.run_tests_inner(runner, config, verbosity, filter, output).await?;
@@ -1106,6 +1141,28 @@ fn junit_xml_report(results: &BTreeMap<String, SuiteResult>, verbosity: u8) -> R
 mod tests {
     use super::*;
     use foundry_config::Chain;
+    use foundry_evm_networks::NetworkConfigs;
+
+    #[test]
+    fn forge_dispatch_uses_the_resolved_network_profile() {
+        assert_eq!(
+            network_dispatch_kind(NetworkConfigs::default().resolve()),
+            NetworkDispatchKind::Ethereum
+        );
+        assert_eq!(
+            network_dispatch_kind(NetworkConfigs::with_tempo().resolve()),
+            NetworkDispatchKind::Tempo
+        );
+        assert_eq!(
+            network_dispatch_kind(NetworkConfigs::with_optimism().resolve()),
+            NetworkDispatchKind::Optimism
+        );
+        #[cfg(feature = "hashkey")]
+        assert_eq!(
+            network_dispatch_kind(NetworkConfigs::with_hashkey().resolve()),
+            NetworkDispatchKind::Optimism
+        );
+    }
 
     #[test]
     fn watch_parse() {
