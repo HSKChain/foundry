@@ -39,8 +39,26 @@ use foundry_evm::{
     opts::EvmOpts,
     traces::{InternalTraceMode, TraceMode, Traces},
 };
+use foundry_evm_networks::ResolvedNetworkProfile;
 use futures::TryFutureExt;
 use revm::{DatabaseRef, context::Block};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum NetworkDispatchKind {
+    Tempo,
+    Optimism,
+    Ethereum,
+}
+
+pub(super) const fn network_dispatch_kind(profile: ResolvedNetworkProfile) -> NetworkDispatchKind {
+    if profile.is_tempo() {
+        NetworkDispatchKind::Tempo
+    } else if profile.is_optimism() {
+        NetworkDispatchKind::Optimism
+    } else {
+        NetworkDispatchKind::Ethereum
+    }
+}
 
 /// CLI arguments for `cast run`.
 #[derive(Clone, Debug, Parser)]
@@ -121,19 +139,27 @@ impl RunArgs {
 
         // Auto-detect network from fork chain ID when not explicitly configured.
         evm_opts.infer_network_from_fork().await;
+        let network_profile = evm_opts.networks.resolve();
 
-        if evm_opts.networks.is_tempo() {
-            self.run_with_evm::<TempoEvmNetwork>().await
-        } else if evm_opts.networks.is_optimism() {
-            self.run_with_evm::<OpEvmNetwork>().await
-        } else {
-            self.run_with_evm::<EthEvmNetwork>().await
+        match network_dispatch_kind(network_profile) {
+            NetworkDispatchKind::Tempo => {
+                self.run_with_evm::<TempoEvmNetwork>(evm_opts, network_profile).await
+            }
+            NetworkDispatchKind::Optimism => {
+                self.run_with_evm::<OpEvmNetwork>(evm_opts, network_profile).await
+            }
+            NetworkDispatchKind::Ethereum => {
+                self.run_with_evm::<EthEvmNetwork>(evm_opts, network_profile).await
+            }
         }
     }
 
-    async fn run_with_evm<FEN: FoundryEvmNetwork>(self) -> Result<()> {
+    async fn run_with_evm<FEN: FoundryEvmNetwork>(
+        self,
+        evm_opts: EvmOpts,
+        network_profile: ResolvedNetworkProfile,
+    ) -> Result<()> {
         let figment = self.rpc.clone().into_figment(self.with_local_artifacts).merge(&self);
-        let evm_opts = figment.extract::<EvmOpts>()?;
         let mut config = Config::from_provider(figment)?.sanitized();
 
         let label = self.label;
@@ -177,10 +203,14 @@ impl RunArgs {
         config.fork_block_number = Some(tx_block_number - 1);
 
         let create2_deployer = evm_opts.create2_deployer;
-        let (block, (mut evm_env, tx_env, fork, chain, networks)) = tokio::try_join!(
+        let (block, (mut evm_env, tx_env, fork, chain, network_profile)) = tokio::try_join!(
             // fetch the block the transaction was mined in
             provider.get_block(tx_block_number.into()).full().into_future().map_err(Into::into),
-            TracingExecutor::<FEN>::get_fork_material(&mut config, evm_opts)
+            TracingExecutor::<FEN>::get_fork_material_with_network_profile(
+                &mut config,
+                evm_opts,
+                network_profile,
+            )
         )?;
 
         let mut evm_version = self.evm_version;
@@ -216,7 +246,7 @@ impl RunArgs {
             apply_chain_and_block_specific_env_changes::<FEN::Network, _, _>(
                 &mut evm_env,
                 block,
-                config.networks.resolve(),
+                network_profile,
             );
         }
 
@@ -228,12 +258,12 @@ impl RunArgs {
                 InternalTraceMode::None
             })
             .with_state_changes(shell::verbosity() > 4);
-        let mut executor = TracingExecutor::<FEN>::new(
+        let mut executor = TracingExecutor::<FEN>::new_with_network_profile(
             (evm_env.clone(), tx_env),
             fork,
             evm_version,
             trace_mode,
-            networks,
+            network_profile,
             create2_deployer,
             None,
         )?;
@@ -404,5 +434,28 @@ impl figment::Provider for RunArgs {
         }
 
         Ok(Map::from([(Config::selected_profile(), map)]))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use foundry_evm_networks::NetworkConfigs;
+
+    #[test]
+    fn cast_execution_dispatches_from_resolved_profiles() {
+        assert_eq!(
+            network_dispatch_kind(NetworkConfigs::default().resolve()),
+            NetworkDispatchKind::Ethereum
+        );
+        assert_eq!(
+            network_dispatch_kind(NetworkConfigs::with_tempo().resolve()),
+            NetworkDispatchKind::Tempo
+        );
+        #[cfg(feature = "hashkey")]
+        assert_eq!(
+            network_dispatch_kind(NetworkConfigs::with_hashkey().resolve()),
+            NetworkDispatchKind::Optimism
+        );
     }
 }

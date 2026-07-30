@@ -1,4 +1,4 @@
-use super::run::fetch_contracts_bytecode_from_trace;
+use super::run::{NetworkDispatchKind, fetch_contracts_bytecode_from_trace, network_dispatch_kind};
 use crate::{
     Cast,
     debug::handle_traces,
@@ -42,6 +42,7 @@ use foundry_evm::{
     opts::EvmOpts,
     traces::{InternalTraceMode, TraceMode},
 };
+use foundry_evm_networks::{NetworkConfigs, ResolvedNetworkProfile};
 use foundry_wallets::WalletOpts;
 use regex::Regex;
 use std::{str::FromStr, sync::LazyLock};
@@ -221,27 +222,38 @@ impl CallArgs {
         if self.rpc.curl {
             return self.run_curl().await;
         }
+        let figment = self.rpc.clone().into_figment(self.with_local_artifacts).merge(&self);
+        let mut evm_opts = figment.extract::<EvmOpts>()?;
         if self.tx.tempo.is_tempo() {
-            self.run_with_network::<TempoEvmNetwork>().await
-        } else {
-            let figment = self.rpc.clone().into_figment(self.with_local_artifacts).merge(&self);
-            let mut evm_opts = figment.extract::<EvmOpts>()?;
-            evm_opts.infer_network_from_fork().await;
+            evm_opts.networks = NetworkConfigs::with_tempo();
+        } else if let Some(chain) = self.chain {
+            evm_opts.networks = evm_opts.networks.with_chain_id(chain.id());
+        }
+        evm_opts.infer_network_from_fork().await;
+        let network_profile = evm_opts.networks.resolve();
 
-            if evm_opts.networks.is_optimism() {
-                self.run_with_network::<OpEvmNetwork>().await
-            } else {
-                self.run_with_network::<EthEvmNetwork>().await
+        match network_dispatch_kind(network_profile) {
+            NetworkDispatchKind::Tempo => {
+                self.run_with_network::<TempoEvmNetwork>(evm_opts, network_profile).await
+            }
+            NetworkDispatchKind::Optimism => {
+                self.run_with_network::<OpEvmNetwork>(evm_opts, network_profile).await
+            }
+            NetworkDispatchKind::Ethereum => {
+                self.run_with_network::<EthEvmNetwork>(evm_opts, network_profile).await
             }
         }
     }
 
-    pub async fn run_with_network<FEN: FoundryEvmNetwork>(self) -> Result<()>
+    pub async fn run_with_network<FEN: FoundryEvmNetwork>(
+        self,
+        evm_opts: EvmOpts,
+        network_profile: ResolvedNetworkProfile,
+    ) -> Result<()>
     where
         <FEN::Network as Network>::TransactionRequest: FoundryTransactionBuilder<FEN::Network>,
     {
         let figment = self.rpc.clone().into_figment(self.with_local_artifacts).merge(&self);
-        let evm_opts = figment.extract::<EvmOpts>()?;
         let mut config = Config::from_provider(figment)?.sanitized();
         let state_overrides = self.get_state_overrides()?;
         let block_overrides = self.get_block_overrides()?;
@@ -307,8 +319,13 @@ impl CallArgs {
             }
 
             let create2_deployer = evm_opts.create2_deployer;
-            let (mut evm_env, tx_env, fork, chain, networks) =
-                TracingExecutor::<FEN>::get_fork_material(&mut config, evm_opts).await?;
+            let (mut evm_env, tx_env, fork, chain, network_profile) =
+                TracingExecutor::<FEN>::get_fork_material_with_network_profile(
+                    &mut config,
+                    evm_opts,
+                    network_profile,
+                )
+                .await?;
 
             // modify settings that usually set in eth_call
             evm_env.cfg_env.disable_block_gas_limit = true;
@@ -333,12 +350,12 @@ impl CallArgs {
                     InternalTraceMode::None
                 })
                 .with_state_changes(shell::verbosity() > 4);
-            let mut executor = TracingExecutor::<FEN>::new(
+            let mut executor = TracingExecutor::<FEN>::new_with_network_profile(
                 (evm_env, tx_env),
                 fork,
                 evm_version,
                 trace_mode,
-                networks,
+                network_profile,
                 create2_deployer,
                 state_overrides,
             )?;
