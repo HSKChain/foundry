@@ -15,7 +15,7 @@ use foundry_compilers::{
 };
 use foundry_config::{Config, SolcReq};
 use foundry_evm::{
-    backend::Backend,
+    construction::ReusableEvmState,
     core::{
         bytecode::InstIter,
         evm::{EthEvmNetwork, FoundryEvmNetwork},
@@ -388,9 +388,9 @@ pub struct SessionSourceConfig<FEN: FoundryEvmNetwork = EthEvmNetwork> {
     pub network_profile: ResolvedNetworkProfile,
     /// Disable the default `Vm` import.
     pub no_vm: bool,
-    /// In-memory REVM db for the session's runner.
+    /// Opaque reusable EVM state for the session's runner.
     #[serde(skip)]
-    pub backend: Option<Backend<FEN>>,
+    pub state: Option<ReusableEvmState<FEN>>,
     /// Optionally enable traces for the REPL contract execution
     pub traces: bool,
     /// Optionally set calldata for the REPL contract execution

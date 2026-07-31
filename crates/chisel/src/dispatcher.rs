@@ -11,12 +11,12 @@ use alloy_primitives::{Address, hex};
 use eyre::{Context, Result};
 use forge_fmt::FormatterConfig;
 use foundry_cli::utils::fetch_abi_from_etherscan;
-use foundry_config::{Config, RpcEndpointUrl};
+use foundry_config::{Chain, Config, RpcEndpointUrl};
 use foundry_evm::{
     core::evm::{EthEvmNetwork, FoundryEvmNetwork},
     decode::decode_console_logs,
     traces::{
-        CallTraceDecoder, CallTraceDecoderBuilder, TraceKind, decode_trace_arena,
+        CallTraceDecoder, TraceKind, decode_trace_arena,
         identifier::{SignaturesIdentifier, TraceIdentifiers},
         render_trace_arena,
     },
@@ -156,23 +156,15 @@ impl<FEN: FoundryEvmNetwork> ChiselDispatcher<FEN> {
     /// Decodes traces in the given [`ChiselResult`].
     // TODO: Add `known_contracts` back in.
     pub async fn decode_traces(
-        session_config: &SessionSourceConfig<FEN>,
+        foundry_config: &Config,
         result: &mut ChiselResult,
         // known_contracts: &ContractsByArtifact,
     ) -> eyre::Result<CallTraceDecoder> {
-        let chain_id = session_config.evm_opts.get_remote_chain_id().await;
+        let mut decoder = result.decoder.clone();
+        decoder.signature_identifier = Some(SignaturesIdentifier::from_config(foundry_config)?);
+        let chain = decoder.chain_id.map(Chain::from_id);
 
-        let mut decoder = CallTraceDecoderBuilder::new()
-            .with_labels(result.labeled_addresses.clone())
-            .with_network_profile(session_config.network_profile, result.network_context)
-            .with_signature_identifier(SignaturesIdentifier::from_config(
-                &session_config.foundry_config,
-            )?)
-            .with_chain_id(chain_id.map(|c| c.id()))
-            .build();
-
-        let mut identifier =
-            TraceIdentifiers::new().with_external(&session_config.foundry_config, chain_id)?;
+        let mut identifier = TraceIdentifiers::new().with_external(foundry_config, chain)?;
         if !identifier.is_empty() {
             for (_, trace) in &mut result.traces {
                 decoder.identify(trace, &mut identifier);
@@ -206,7 +198,9 @@ impl<FEN: FoundryEvmNetwork> ChiselDispatcher<FEN> {
         let mut res = new_source.execute().await?;
         let failed = !res.success;
         if new_source.config.traces || failed {
-            if let Ok(decoder) = Self::decode_traces(&new_source.config, &mut res).await {
+            if let Ok(decoder) =
+                Self::decode_traces(&new_source.config.foundry_config, &mut res).await
+            {
                 Self::show_traces(&decoder, &mut res).await?;
 
                 // Show console logs, if there are any
@@ -341,6 +335,7 @@ impl<FEN: FoundryEvmNetwork> ChiselDispatcher<FEN> {
     pub(crate) fn set_fork(&mut self, url: Option<String>) -> Result<()> {
         let Some(url) = url else {
             self.source_mut().config.evm_opts.fork_url = None;
+            self.source_mut().config.state = None;
             sh_println!("Now using local environment.")?;
             return Ok(());
         };
@@ -364,9 +359,9 @@ impl<FEN: FoundryEvmNetwork> ChiselDispatcher<FEN> {
         sh_println!("Set fork URL to {}", fork_url.yellow())?;
 
         self.source_mut().config.evm_opts.fork_url = Some(fork_url);
-        // Clear the backend so that it is re-instantiated with the new fork
+        // Clear reusable state so that it is re-instantiated with the new fork
         // upon the next execution of the session source.
-        self.source_mut().config.backend = None;
+        self.source_mut().config.state = None;
 
         Ok(())
     }
@@ -557,6 +552,7 @@ fn prepare_loaded_session_config<FEN: FoundryEvmNetwork>(
 ) -> Result<()> {
     ensure_loaded_session_network_matches(&current.foundry_config, &loaded.foundry_config, id)?;
     loaded.network_profile = current.network_profile;
+    loaded.state = None;
     Ok(())
 }
 
@@ -589,6 +585,7 @@ fn preprocess(input: &str) -> (bool, Cow<'_, str>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "hashkey")]
     use foundry_evm::core::evm::OpEvmNetwork;
 
     #[cfg(feature = "hashkey")]
@@ -614,6 +611,7 @@ mod tests {
         prepare_loaded_session_config(&current, &mut loaded, "42").unwrap();
 
         assert_eq!(loaded.network_profile, network_profile);
+        assert!(loaded.state.is_none());
     }
 
     #[test]

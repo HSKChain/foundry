@@ -12,15 +12,12 @@ use alloy_primitives::{Address, B256, U256, hex};
 use eyre::{Result, WrapErr};
 use foundry_compilers::Artifact;
 use foundry_evm::{
-    backend::Backend,
-    core::evm::{BlockEnvFor, FoundryEvmNetwork, SpecFor, TxEnvFor},
+    construction::{EvmConstruction, ExecutorConfig},
+    core::evm::{FoundryEvmNetwork, SpecFor},
     decode::decode_console_logs,
-    executors::ExecutorBuilder,
     inspectors::CheatsConfig,
-    revm::context::Block,
     traces::TraceMode,
 };
-use foundry_evm_networks::NetworkExecutionContext;
 use solang_parser::pt;
 use std::ops::ControlFlow;
 use yansi::Paint;
@@ -44,7 +41,9 @@ impl<FEN: FoundryEvmNetwork> SessionSource<FEN> {
         })?;
         let final_pc = final_pc.unwrap_or_default();
         let mut runner = self.build_runner(final_pc).await?;
-        runner.run(bytecode)
+        let result = runner.run(bytecode)?;
+        self.config.state = Some(runner.reusable_state());
+        Ok(result)
     }
 
     /// Inspect a contract element inside of the current session
@@ -111,7 +110,8 @@ impl<FEN: FoundryEvmNetwork> SessionSource<FEN> {
         let Some((stack, memory)) = &res.state else {
             // Show traces and logs, if there are any, and return an error
             if let Ok(decoder) =
-                ChiselDispatcher::<FEN>::decode_traces(&source.config, &mut res).await
+                ChiselDispatcher::<FEN>::decode_traces(&source.config.foundry_config, &mut res)
+                    .await
             {
                 ChiselDispatcher::<FEN>::show_traces(&decoder, &mut res).await?;
             }
@@ -207,60 +207,39 @@ impl<FEN: FoundryEvmNetwork> SessionSource<FEN> {
     }
 
     async fn build_runner(&mut self, final_pc: usize) -> Result<ChiselRunner<FEN>> {
-        let (evm_env, tx_env, fork_block) = self
-            .config
-            .evm_opts
-            .env_with_network_profile::<SpecFor<FEN>, BlockEnvFor<FEN>, TxEnvFor<FEN>>(
-                self.config.network_profile,
-            )
-            .await?;
-
-        let network_context = NetworkExecutionContext::new(
-            evm_env.cfg_env.chain_id,
-            evm_env.block_env.timestamp().saturating_to(),
-        );
-
-        let backend = match self.config.backend.clone() {
-            Some(backend) => backend,
+        let prepared = match self.config.state.as_ref() {
+            Some(state) => {
+                EvmConstruction::prepare_with_state::<FEN>(&self.config.evm_opts, state).await?
+            }
             None => {
-                let fork = self.config.evm_opts.get_fork_with_network_profile(
+                EvmConstruction::prepare::<FEN>(
+                    &self.config.evm_opts,
                     &self.config.foundry_config,
-                    evm_env.cfg_env.chain_id,
-                    fork_block,
                     self.config.network_profile,
-                );
-                let backend = Backend::<FEN>::spawn_with_network_profile(
-                    fork,
-                    self.config.network_profile,
-                    network_context,
-                )?;
-                self.config.backend = Some(backend.clone());
-                backend
+                )
+                .await?
             }
         };
 
-        let executor = ExecutorBuilder::<FEN>::default()
-            .inspectors(|stack| {
-                stack
-                    .logs(self.config.foundry_config.live_logs)
-                    .chisel_state(final_pc)
-                    .trace_mode(TraceMode::Call)
-                    .network_profile(self.config.network_profile)
-                    .cheatcodes(
-                        CheatsConfig::new(
-                            &self.config.foundry_config,
-                            self.config.evm_opts.clone(),
-                            None,
-                            None,
-                            None,
-                        )
-                        .into(),
+        let executor = prepared.construct(
+            ExecutorConfig::default()
+                .logs(self.config.foundry_config.live_logs)
+                .chisel_state(final_pc)
+                .trace_mode(TraceMode::Call)
+                .cheatcodes(
+                    CheatsConfig::new(
+                        &self.config.foundry_config,
+                        self.config.evm_opts.clone(),
+                        None,
+                        None,
+                        None,
                     )
-            })
-            .gas_limit(self.config.evm_opts.gas_limit())
-            .spec_id(self.config.foundry_config.evm_spec_id::<SpecFor<FEN>>())
-            .legacy_assertions(self.config.foundry_config.legacy_assertions)
-            .build(evm_env, tx_env, backend);
+                    .into(),
+                )
+                .gas_limit(self.config.evm_opts.gas_limit())
+                .spec_id(self.config.foundry_config.evm_spec_id::<SpecFor<FEN>>())
+                .legacy_assertions(self.config.foundry_config.legacy_assertions),
+        )?;
 
         Ok(ChiselRunner::new(executor, U256::MAX, Address::ZERO, self.config.calldata.clone()))
     }
@@ -1273,46 +1252,61 @@ fn unit_multiplier(unit: &Option<pt::Identifier>) -> Result<U256> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "hashkey")]
+    use foundry_cli::opts::GlobalArgs;
     use foundry_compilers::{error::SolcError, solc::Solc};
-    use foundry_evm::{
-        backend::DatabaseExt,
-        core::evm::OpEvmNetwork,
-        revm::{Database, state::AccountInfo},
-    };
+    #[cfg(feature = "hashkey")]
+    use foundry_config::{Config, GasLimit};
+    #[cfg(feature = "hashkey")]
+    use foundry_evm::{core::evm::OpEvmNetwork, opts::EvmOpts, revm::Database};
+    #[cfg(feature = "hashkey")]
     use foundry_evm_networks::NetworkConfigs;
     use std::sync::Mutex;
 
     #[cfg(feature = "hashkey")]
     #[test]
-    fn stateful_rebuild_preserves_hashkey_profile_and_backend() {
-        let network_profile = NetworkConfigs::with_hashkey().resolve();
-        let address = Address::random();
-        let mut backend = Backend::<OpEvmNetwork>::spawn_with_network_profile(
-            None,
-            network_profile,
-            NetworkExecutionContext::new(31337, 0),
-        )
-        .unwrap();
-        backend.insert_account_info(
-            address,
-            AccountInfo { balance: U256::from(42), ..Default::default() },
-        );
+    fn stateful_rebuild_preserves_hashkey_profile_and_state() {
+        GlobalArgs::default().block_on(async {
+            let network_profile = NetworkConfigs::with_hashkey().resolve();
+            let address = Address::random();
+            let mut evm_opts = EvmOpts::default();
+            evm_opts.env.chain_id = Some(31337);
+            evm_opts.env.gas_limit = GasLimit(30_000_000);
+            let prepared = EvmConstruction::prepare::<OpEvmNetwork>(
+                &evm_opts,
+                &Config::default(),
+                network_profile,
+            )
+            .await
+            .unwrap();
+            let mut executor = prepared.construct(ExecutorConfig::default()).unwrap();
+            executor.set_balance(address, U256::from(42)).unwrap();
+            let state = executor.reusable_state();
 
-        let mut source = source_with_network::<OpEvmNetwork>();
-        source.config.network_profile = network_profile;
-        source.config.backend = Some(backend);
+            let mut source = source_with_network::<OpEvmNetwork>();
+            source.config.network_profile = network_profile;
+            source.config.evm_opts = evm_opts;
+            source.config.state = Some(state);
 
-        let (rebuilt, executes) =
-            source.clone_with_new_line("uint256 value = 1".to_string()).unwrap();
+            let (rebuilt, executes) =
+                source.clone_with_new_line("uint256 value = 1".to_string()).unwrap();
 
-        assert!(executes);
-        assert_eq!(rebuilt.config.network_profile, network_profile);
-        let mut rebuilt_backend = rebuilt.config.backend.unwrap();
-        assert_eq!(rebuilt_backend.network_profile(), network_profile);
-        assert_eq!(
-            Database::basic(&mut rebuilt_backend, address).unwrap().unwrap().balance,
-            U256::from(42)
-        );
+            assert!(executes);
+            assert_eq!(rebuilt.config.network_profile, network_profile);
+            let rebuilt_state = rebuilt.config.state.as_ref().unwrap();
+            assert_eq!(rebuilt_state.network_profile(), network_profile);
+            let prepared = EvmConstruction::prepare_with_state::<OpEvmNetwork>(
+                &rebuilt.config.evm_opts,
+                rebuilt_state,
+            )
+            .await
+            .unwrap();
+            let mut executor = prepared.construct(ExecutorConfig::default()).unwrap();
+            assert_eq!(
+                Database::basic(executor.backend_mut(), address).unwrap().unwrap().balance,
+                U256::from(42)
+            );
+        });
     }
 
     #[test]

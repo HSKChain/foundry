@@ -123,6 +123,56 @@ impl EvmConstruction {
             is_fork,
         })
     }
+
+    /// Prepares a fresh environment snapshot over reusable opaque backend state.
+    pub async fn prepare_with_state<FEN: FoundryEvmNetwork>(
+        evm_opts: &EvmOpts,
+        state: &ReusableEvmState<FEN>,
+    ) -> Result<PreparedEvm<FEN>, EvmConstructionError>
+    where
+        SpecFor<FEN>: Into<revm::primitives::hardfork::SpecId> + Default + Copy,
+        BlockEnvFor<FEN>: FoundryBlock + Default,
+        TxEnvFor<FEN>: FoundryTransaction + Default,
+    {
+        validate_family::<FEN>(state.network_profile)?;
+        let (evm_env, tx_env, fork_block_number) = evm_opts
+            .env_with_network_profile::<SpecFor<FEN>, BlockEnvFor<FEN>, TxEnvFor<FEN>>(
+                state.network_profile,
+            )
+            .await
+            .map_err(|error| EvmConstructionError::Environment(error.to_string()))?;
+        if state.backend.network_profile() != state.network_profile {
+            return Err(EvmConstructionError::ForkProfileMismatch {
+                fork: state.backend.network_profile().name(),
+                prepared: state.network_profile.name(),
+            });
+        }
+
+        Ok(PreparedEvm {
+            backend: state.backend.clone(),
+            network_context: execution_context::<FEN>(&evm_env),
+            evm_env,
+            tx_env,
+            fork_block_number,
+            network_profile: state.network_profile,
+            is_fork: state.is_fork,
+        })
+    }
+}
+
+/// Opaque backend state reusable across independent EVM constructions.
+#[derive(Clone, Debug)]
+pub struct ReusableEvmState<FEN: FoundryEvmNetwork> {
+    backend: Backend<FEN>,
+    network_profile: ResolvedNetworkProfile,
+    is_fork: bool,
+}
+
+impl<FEN: FoundryEvmNetwork> ReusableEvmState<FEN> {
+    /// Returns the immutable network profile owned by this reusable state.
+    pub const fn network_profile(&self) -> ResolvedNetworkProfile {
+        self.network_profile
+    }
 }
 
 /// Opaque environment and reusable state prepared for one construction.
@@ -138,6 +188,15 @@ pub struct PreparedEvm<FEN: FoundryEvmNetwork> {
 }
 
 impl<FEN: FoundryEvmNetwork> PreparedEvm<FEN> {
+    /// Returns reusable state without retaining this preparation's environment snapshot.
+    pub fn reusable_state(&self) -> ReusableEvmState<FEN> {
+        ReusableEvmState {
+            backend: self.backend.clone(),
+            network_profile: self.network_profile,
+            is_fork: self.is_fork,
+        }
+    }
+
     /// Refreshes environment data while reusing this preparation's backend state and profile.
     pub async fn refresh(&self, evm_opts: &EvmOpts) -> Result<Self, EvmConstructionError>
     where
@@ -224,7 +283,9 @@ impl<FEN: FoundryEvmNetwork> PreparedEvm<FEN> {
         config: ExecutorConfig<FEN>,
     ) -> Result<ConstructedEvm<FEN>, EvmConstructionError> {
         self.validate()?;
-        let Self { backend, evm_env, mut tx_env, network_profile, network_context, .. } = self;
+        let Self {
+            backend, evm_env, mut tx_env, network_profile, network_context, is_fork, ..
+        } = self;
 
         let ExecutorConfig { inspectors, gas_limit, spec, legacy_assertions, fee_token, .. } =
             config;
@@ -249,6 +310,8 @@ impl<FEN: FoundryEvmNetwork> PreparedEvm<FEN> {
             decoder,
             chain_id: network_context.chain_id,
             timestamp: network_context.timestamp,
+            network_profile,
+            is_fork,
         })
     }
 }
@@ -327,6 +390,12 @@ impl<FEN: FoundryEvmNetwork> ExecutorConfig<FEN> {
         self
     }
 
+    /// Captures Chisel stack and memory state at the requested program counter.
+    pub fn chisel_state(mut self, final_pc: usize) -> Self {
+        self.inspectors = self.inspectors.chisel_state(final_pc);
+        self
+    }
+
     /// Overrides the executor gas limit.
     pub const fn gas_limit(mut self, gas_limit: u64) -> Self {
         self.gas_limit = Some(gas_limit);
@@ -363,6 +432,8 @@ pub struct ConstructedEvm<FEN: FoundryEvmNetwork> {
     decoder: CallTraceDecoder,
     chain_id: u64,
     timestamp: u64,
+    network_profile: ResolvedNetworkProfile,
+    is_fork: bool,
 }
 
 impl<FEN: FoundryEvmNetwork> ConstructedEvm<FEN> {
@@ -374,6 +445,15 @@ impl<FEN: FoundryEvmNetwork> ConstructedEvm<FEN> {
     /// Returns the timestamp fixed for this construction.
     pub const fn timestamp(&self) -> u64 {
         self.timestamp
+    }
+
+    /// Returns the executor's current backend state without retaining its environment snapshot.
+    pub fn reusable_state(&self) -> ReusableEvmState<FEN> {
+        ReusableEvmState {
+            backend: self.executor.backend().clone(),
+            network_profile: self.network_profile,
+            is_fork: self.is_fork,
+        }
     }
 
     /// Decodes one call using the decoder bound to this construction.
@@ -540,6 +620,8 @@ mod tests {
     #[cfg(feature = "hashkey")]
     use foundry_evm_core::evm::OpEvmNetwork;
     use foundry_evm_networks::NetworkConfigs;
+    #[cfg(feature = "hashkey")]
+    use hsk_b20_config::B20Config;
 
     #[cfg(feature = "hashkey")]
     const B20_FACTORY: Address = address!("B20F000000000000000000000000000000000000");
@@ -602,5 +684,36 @@ mod tests {
         assert_eq!(normal_decoded, traced_decoded);
         assert_eq!(normal_decoded, isolated_decoded);
         assert_eq!((normal.chain_id(), normal.timestamp()), (177, 0));
+    }
+
+    #[cfg(feature = "hashkey")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reusable_state_derives_a_fresh_activation_snapshot() {
+        let config = B20Config::new(Some(100), Some(Address::repeat_byte(0x11))).unwrap();
+        let profile = NetworkConfigs::with_hashkey().resolve().with_b20_config_for_test(config);
+        let mut evm_opts = EvmOpts::default();
+        evm_opts.env.chain_id = Some(177);
+        evm_opts.env.gas_limit = GasLimit(30_000_000);
+        evm_opts.env.block_timestamp = revm::primitives::U256::from(99);
+
+        let prepared =
+            EvmConstruction::prepare::<OpEvmNetwork>(&evm_opts, &Config::default(), profile)
+                .await
+                .unwrap();
+        let state = prepared.reusable_state();
+        let before = prepared.construct(ExecutorConfig::default()).unwrap();
+        let trace = CallTrace { address: B20_FACTORY, ..Default::default() };
+        assert_eq!(before.timestamp(), 99);
+        assert_eq!(before.decode_function(&trace).await.label, None);
+
+        evm_opts.env.block_timestamp = revm::primitives::U256::from(100);
+        let after = EvmConstruction::prepare_with_state::<OpEvmNetwork>(&evm_opts, &state)
+            .await
+            .unwrap()
+            .construct(ExecutorConfig::default())
+            .unwrap();
+
+        assert_eq!(after.timestamp(), 100);
+        assert_eq!(after.decode_function(&trace).await.label.as_deref(), Some("B20Factory"));
     }
 }

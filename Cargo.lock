@@ -5564,6 +5564,7 @@ dependencies = [
  "foundry-evm-networks",
  "foundry-evm-sancov",
  "foundry-evm-traces",
+ "hsk-b20-config",
  "indicatif",
  "parking_lot",
  "proptest",
