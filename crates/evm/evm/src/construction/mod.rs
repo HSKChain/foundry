@@ -386,6 +386,16 @@ impl<FEN: FoundryEvmNetwork> ConstructedEvm<FEN> {
         &self.decoder
     }
 
+    /// Builds a consumer decoder bound to this construction snapshot.
+    pub fn trace_decoder(&self, config: DecoderConfig) -> CallTraceDecoder {
+        build_decoder(
+            self.decoder.network_profile,
+            self.decoder.network_context,
+            self.decoder.chain_id,
+            config,
+        )
+    }
+
     /// Returns the coherent executor projection for consumers that own execution.
     pub fn into_executor(self) -> Executor<FEN> {
         self.executor
@@ -394,7 +404,7 @@ impl<FEN: FoundryEvmNetwork> ConstructedEvm<FEN> {
 
 /// Consumer-specific trace decoding behavior without network selection fields.
 #[derive(Default)]
-#[must_use = "decoder config does nothing unless passed to `PreparedEvm::trace_decoder`"]
+#[must_use = "decoder config does nothing unless passed to a snapshot-bound trace decoder"]
 pub struct DecoderConfig {
     known_contracts: Option<ContractsByArtifact>,
     labels: AddressHashMap<String>,

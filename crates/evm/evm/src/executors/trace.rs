@@ -1,5 +1,5 @@
 use crate::{
-    construction::{ConstructedEvm, EvmConstruction, ExecutorConfig, PreparedEvm},
+    construction::{ConstructedEvm, DecoderConfig, EvmConstruction, ExecutorConfig, PreparedEvm},
     executors::Executor,
 };
 use alloy_primitives::{Address, U256, map::HashMap};
@@ -77,9 +77,19 @@ impl<FEN: FoundryEvmNetwork> TracingExecutor<FEN> {
         self.constructed.spec_id()
     }
 
+    /// Returns the chain ID bound to this executor's construction snapshot.
+    pub const fn chain_id(&self) -> u64 {
+        self.constructed.chain_id()
+    }
+
     /// Returns the decoder bound to the same snapshot as this executor.
     pub const fn decoder(&self) -> &CallTraceDecoder {
         self.constructed.decoder()
+    }
+
+    /// Builds a consumer decoder bound to the same snapshot as this executor.
+    pub fn trace_decoder(&self, config: DecoderConfig) -> CallTraceDecoder {
+        self.constructed.trace_decoder(config)
     }
 
     /// uses the fork block number from the config

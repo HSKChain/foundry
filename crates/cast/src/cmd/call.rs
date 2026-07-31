@@ -42,7 +42,7 @@ use foundry_evm::{
     opts::EvmOpts,
     traces::{InternalTraceMode, TraceMode},
 };
-use foundry_evm_networks::{NetworkConfigs, NetworkExecutionContext, ResolvedNetworkProfile};
+use foundry_evm_networks::{NetworkConfigs, ResolvedNetworkProfile};
 use foundry_wallets::WalletOpts;
 use regex::Regex;
 use std::{str::FromStr, sync::LazyLock};
@@ -319,7 +319,7 @@ impl CallArgs {
             }
 
             let create2_deployer = evm_opts.create2_deployer;
-            let (mut prepared, chain) =
+            let (mut prepared, _) =
                 TracingExecutor::<FEN>::prepare(&mut config, evm_opts, network_profile).await?;
             prepared.configure_env(|evm_env, _| {
                 // modify settings that usually set in eth_call
@@ -337,9 +337,6 @@ impl CallArgs {
                     }
                 }
             });
-
-            let network_context =
-                NetworkExecutionContext::new(prepared.chain_id(), prepared.timestamp());
 
             let trace_mode = TraceMode::Call
                 .with_debug(debug)
@@ -411,8 +408,8 @@ impl CallArgs {
             let contracts_bytecode = fetch_contracts_bytecode_from_trace(&executor, &trace)?;
             handle_traces(
                 trace,
+                &executor,
                 &config,
-                chain,
                 &contracts_bytecode,
                 labels,
                 with_local_artifacts,
@@ -420,8 +417,6 @@ impl CallArgs {
                 decode_internal,
                 disable_labels,
                 None,
-                network_profile,
-                network_context,
             )
             .await?;
 

@@ -39,7 +39,7 @@ use foundry_evm::{
     opts::EvmOpts,
     traces::{InternalTraceMode, TraceMode, Traces},
 };
-use foundry_evm_networks::{NetworkConfigs, NetworkExecutionContext, ResolvedNetworkProfile};
+use foundry_evm_networks::{NetworkConfigs, ResolvedNetworkProfile};
 use futures::TryFutureExt;
 use revm::{DatabaseRef, context::Block};
 
@@ -207,7 +207,7 @@ impl RunArgs {
         config.fork_block_number = Some(tx_block_number - 1);
 
         let create2_deployer = evm_opts.create2_deployer;
-        let (block, (mut prepared, chain)) = tokio::try_join!(
+        let (block, (mut prepared, _)) = tokio::try_join!(
             // fetch the block the transaction was mined in
             provider.get_block(tx_block_number.into()).full().into_future().map_err(Into::into),
             TracingExecutor::<FEN>::prepare(&mut config, evm_opts, network_profile,)
@@ -335,11 +335,6 @@ impl RunArgs {
             }
         }
 
-        let network_context = NetworkExecutionContext::new(
-            evm_env.cfg_env.chain_id,
-            evm_env.block_env.timestamp().saturating_to(),
-        );
-
         // Execute our transaction
         let result = {
             executor.set_trace_printer(self.trace_printer);
@@ -362,8 +357,8 @@ impl RunArgs {
         let contracts_bytecode = fetch_contracts_bytecode_from_trace(&executor, &result)?;
         handle_traces(
             result,
+            &executor,
             &config,
-            chain,
             &contracts_bytecode,
             label,
             with_local_artifacts,
@@ -371,8 +366,6 @@ impl RunArgs {
             decode_internal,
             disable_labels,
             self.trace_depth,
-            network_profile,
-            network_context,
         )
         .await?;
 

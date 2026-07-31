@@ -6,13 +6,17 @@ use foundry_cli::utils::{TraceResult, print_traces};
 use foundry_common::{ContractsByArtifact, compile::ProjectCompiler, shell};
 use foundry_config::Config;
 use foundry_debugger::Debugger;
-use foundry_evm::traces::{
-    CallTraceDecoder, CallTraceDecoderBuilder, DebugTraceIdentifier, Traces,
-    debug::ContractSources,
-    decode_trace_arena,
-    identifier::{SignaturesIdentifier, TraceIdentifiers},
+use foundry_evm::{
+    construction::DecoderConfig,
+    core::evm::FoundryEvmNetwork,
+    executors::TracingExecutor,
+    traces::{
+        CallTraceDecoder, DebugTraceIdentifier, Traces,
+        debug::ContractSources,
+        decode_trace_arena,
+        identifier::{SignaturesIdentifier, TraceIdentifiers},
+    },
 };
-use foundry_evm_networks::{NetworkExecutionContext, ResolvedNetworkProfile};
 
 async fn decode_debugger_traces(traces: &mut Traces, decoder: &CallTraceDecoder) {
     for (_, trace) in traces {
@@ -22,10 +26,10 @@ async fn decode_debugger_traces(traces: &mut Traces, decoder: &CallTraceDecoder)
 
 /// labels the traces, conditionally prints them or opens the debugger
 #[expect(clippy::too_many_arguments)]
-pub(crate) async fn handle_traces(
+pub(crate) async fn handle_traces<FEN: FoundryEvmNetwork>(
     mut result: TraceResult,
+    executor: &TracingExecutor<FEN>,
     config: &Config,
-    chain: Chain,
     contracts_bytecode: &HashMap<Address, Bytes>,
     labels: Vec<String>,
     with_local_artifacts: bool,
@@ -33,9 +37,8 @@ pub(crate) async fn handle_traces(
     decode_internal: bool,
     disable_label: bool,
     trace_depth: Option<usize>,
-    network_profile: ResolvedNetworkProfile,
-    network_context: NetworkExecutionContext,
 ) -> eyre::Result<()> {
+    let chain = Chain::from_id(executor.chain_id());
     let (known_contracts, mut sources) = if with_local_artifacts {
         let _ = sh_println!("Compiling project to generate artifacts");
         let project = config.project()?;
@@ -63,19 +66,17 @@ pub(crate) async fn handle_traces(
     });
     let config_labels = config.labels.clone().into_iter();
 
-    let mut builder = CallTraceDecoderBuilder::new()
-        .with_labels(labels.chain(config_labels))
-        .with_signature_identifier(SignaturesIdentifier::from_config(config)?)
-        .with_label_disabled(disable_label)
-        .with_chain_id(Some(chain.id()))
-        .with_network_profile(network_profile, network_context);
+    let mut decoder_config = DecoderConfig::default()
+        .labels(labels.chain(config_labels))
+        .signature_identifier(SignaturesIdentifier::from_config(config)?)
+        .label_disabled(disable_label);
     let mut identifier = TraceIdentifiers::new().with_external(config, Some(chain))?;
     if let Some(contracts) = &known_contracts {
-        builder = builder.with_known_contracts(contracts);
+        decoder_config = decoder_config.known_contracts(contracts.clone());
         identifier = identifier.with_local_and_bytecodes(contracts, contracts_bytecode);
     }
 
-    let mut decoder = builder.build();
+    let mut decoder = executor.trace_decoder(decoder_config);
 
     for (_, trace) in result.traces.as_deref_mut().unwrap_or_default() {
         decoder.identify(trace, &mut identifier);
@@ -120,12 +121,17 @@ mod tests {
     use alloy_dyn_abi::{DynSolValue, JsonAbiExt};
     use alloy_json_abi::Function;
     use alloy_primitives::U256;
-    use foundry_evm::traces::{
-        CallTrace, CallTraceArena, CallTraceNode, SparsedTraceArena, TraceKind,
+    use foundry_evm::{
+        construction::EvmConstruction,
+        core::evm::OpEvmNetwork,
+        opts::EvmOpts,
+        traces::{
+            CallTrace, CallTraceArena, CallTraceNode, SparsedTraceArena, TraceKind, TraceMode,
+        },
     };
     use foundry_evm_networks::NetworkConfigs;
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn hashkey_debugger_projection_decodes_b20_calls() {
         let mut token = [0u8; 20];
         token[0] = 0xb2;
@@ -151,12 +157,18 @@ mod tests {
         };
         let mut traces =
             vec![(TraceKind::Execution, SparsedTraceArena { arena, ignored: Default::default() })];
-        let decoder = CallTraceDecoderBuilder::new()
-            .with_network_profile(
-                NetworkConfigs::with_hashkey().resolve(),
-                NetworkExecutionContext::new(177, 0),
-            )
-            .build();
+        let profile = NetworkConfigs::with_hashkey().resolve();
+        let mut evm_opts = EvmOpts::default();
+        evm_opts.env.chain_id = Some(177);
+        let prepared =
+            EvmConstruction::prepare::<OpEvmNetwork>(&evm_opts, &Config::default(), profile)
+                .await
+                .unwrap();
+        let executor =
+            TracingExecutor::new(prepared, None, TraceMode::Call, Address::ZERO, None).unwrap();
+        let decoder = executor.trace_decoder(DecoderConfig::default());
+        assert_eq!(decoder.network_profile, executor.decoder().network_profile);
+        assert_eq!(decoder.network_context, executor.decoder().network_context);
 
         decode_debugger_traces(&mut traces, &decoder).await;
 
