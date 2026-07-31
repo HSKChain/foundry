@@ -199,6 +199,74 @@ impl NetworkExecutionContext {
     }
 }
 
+/// Canonical network-owned contract identity used by trace projections.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NetworkTraceIdentity {
+    /// HashKey B20 factory singleton.
+    #[cfg(feature = "hashkey")]
+    B20Factory,
+    /// HashKey B20 activation registry singleton.
+    #[cfg(feature = "hashkey")]
+    B20ActivationRegistry,
+    /// HashKey B20 policy registry singleton.
+    #[cfg(feature = "hashkey")]
+    B20PolicyRegistry,
+    /// HashKey B20 Asset dynamic token.
+    #[cfg(feature = "hashkey")]
+    B20Asset,
+    /// HashKey B20 Stablecoin dynamic token.
+    #[cfg(feature = "hashkey")]
+    B20Stablecoin,
+}
+
+impl NetworkTraceIdentity {
+    /// Returns the stable user-facing trace label.
+    pub const fn label(self) -> &'static str {
+        match self {
+            #[cfg(feature = "hashkey")]
+            Self::B20Factory => "B20Factory",
+            #[cfg(feature = "hashkey")]
+            Self::B20ActivationRegistry => "B20ActivationRegistry",
+            #[cfg(feature = "hashkey")]
+            Self::B20PolicyRegistry => "B20PolicyRegistry",
+            #[cfg(feature = "hashkey")]
+            Self::B20Asset => "B20Asset",
+            #[cfg(feature = "hashkey")]
+            Self::B20Stablecoin => "B20Stablecoin",
+        }
+    }
+
+    /// Returns the singleton address for fixed identities.
+    pub const fn fixed_address(self) -> Option<Address> {
+        #[cfg(feature = "hashkey")]
+        {
+            match self {
+                Self::B20Factory => Some(B20_FACTORY),
+                Self::B20ActivationRegistry => Some(B20_ACTIVATION_REGISTRY),
+                Self::B20PolicyRegistry => Some(B20_POLICY_REGISTRY),
+                Self::B20Asset | Self::B20Stablecoin => None,
+            }
+        }
+        #[cfg(not(feature = "hashkey"))]
+        match self {}
+    }
+
+    /// Returns all fixed network-owned trace identities.
+    pub const fn fixed_identities() -> &'static [Self] {
+        #[cfg(feature = "hashkey")]
+        {
+            const IDENTITIES: &[NetworkTraceIdentity] = &[
+                NetworkTraceIdentity::B20Factory,
+                NetworkTraceIdentity::B20ActivationRegistry,
+                NetworkTraceIdentity::B20PolicyRegistry,
+            ];
+            IDENTITIES
+        }
+        #[cfg(not(feature = "hashkey"))]
+        &[]
+    }
+}
+
 /// State preparation selected by a resolved network profile.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum NetworkStatePlan {
@@ -372,6 +440,39 @@ impl ResolvedNetworkProfile {
             .expect("resolved HashKey B20 config is valid")
     }
 
+    /// Resolves an address to a network-owned trace identity for one activation snapshot.
+    ///
+    /// Dynamic B20 tokens are identified only from their canonical address variant. This does not
+    /// read mutable token metadata or imply that an uninitialized structural address has code.
+    pub fn trace_identity(
+        self,
+        address: Address,
+        context: NetworkExecutionContext,
+    ) -> Option<NetworkTraceIdentity> {
+        #[cfg(feature = "hashkey")]
+        if self.hashkey && self.b20_config().is_active_at(context.timestamp) {
+            return match address {
+                B20_FACTORY => Some(NetworkTraceIdentity::B20Factory),
+                B20_ACTIVATION_REGISTRY => Some(NetworkTraceIdentity::B20ActivationRegistry),
+                B20_POLICY_REGISTRY => Some(NetworkTraceIdentity::B20PolicyRegistry),
+                address => match B20Variant::from_address(address) {
+                    Some(B20Variant::Asset) => Some(NetworkTraceIdentity::B20Asset),
+                    Some(B20Variant::Stablecoin) => Some(NetworkTraceIdentity::B20Stablecoin),
+                    None => None,
+                },
+            };
+        }
+        let _ = (address, context);
+        None
+    }
+
+    #[cfg(all(test, feature = "hashkey"))]
+    const fn with_b20_config(mut self, config: B20Config) -> Self {
+        self.b20_activation_time = config.activation_time();
+        self.b20_activation_admin = config.activation_admin();
+        self
+    }
+
     /// Returns the standalone-local B20 genesis allocation when HashKey is selected.
     #[cfg(feature = "hashkey")]
     pub fn b20_genesis_alloc(self) -> Option<B20GenesisAlloc> {
@@ -379,7 +480,7 @@ impl ResolvedNetworkProfile {
     }
 
     /// Returns whether `address` is a fixed B20 singleton owned by this profile.
-    pub fn is_b20_singleton(self, address: Address) -> bool {
+    pub const fn is_b20_singleton(self, address: Address) -> bool {
         #[cfg(feature = "hashkey")]
         {
             self.is_hashkey()
@@ -955,6 +1056,39 @@ mod tests {
         assert!(!profile.protects_b20_native_state(dynamic, alloy_primitives::KECCAK256_EMPTY));
         assert!(!profile.protects_b20_native_state(Address::repeat_byte(0x22), keccak256([0xef])));
         assert!(!NetworkConfigs::default().resolve().is_b20_singleton(B20_FACTORY));
+    }
+
+    #[cfg(feature = "hashkey")]
+    #[test]
+    fn hashkey_trace_identity_follows_activation_snapshot() {
+        let config = B20Config::new(Some(100), Some(Address::repeat_byte(0x11))).unwrap();
+        let profile = NetworkConfigs::with_hashkey().resolve().with_b20_config(config);
+        let asset = B20Variant::Asset
+            .compute_address(Address::repeat_byte(0x22), B256::repeat_byte(0x33))
+            .0;
+
+        assert_eq!(profile.trace_identity(asset, NetworkExecutionContext::new(177, 99)), None);
+        assert_eq!(
+            profile.trace_identity(asset, NetworkExecutionContext::new(177, 100)),
+            Some(NetworkTraceIdentity::B20Asset)
+        );
+        assert_eq!(
+            profile.trace_identity(asset, NetworkExecutionContext::new(177, 101)),
+            Some(NetworkTraceIdentity::B20Asset)
+        );
+        assert_eq!(
+            profile.trace_identity(B20_FACTORY, NetworkExecutionContext::new(177, 100)),
+            Some(NetworkTraceIdentity::B20Factory)
+        );
+        assert_eq!(NetworkTraceIdentity::B20Factory.fixed_address(), Some(B20_FACTORY));
+        assert_eq!(NetworkTraceIdentity::B20Asset.fixed_address(), None);
+        assert_eq!(NetworkTraceIdentity::fixed_identities().len(), 3);
+        assert_eq!(
+            NetworkConfigs::with_optimism()
+                .resolve()
+                .trace_identity(asset, NetworkExecutionContext::new(177, 100)),
+            None
+        );
     }
 
     #[cfg(feature = "hashkey")]

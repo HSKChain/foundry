@@ -47,10 +47,10 @@ use foundry_evm::{
     opts::EvmOpts,
     traces::{backtrace::BacktraceBuilder, identifier::TraceIdentifiers, prune_trace_depth},
 };
-use foundry_evm_networks::ResolvedNetworkProfile;
+use foundry_evm_networks::{NetworkExecutionContext, ResolvedNetworkProfile};
 use rand::Rng;
 use regex::Regex;
-use revm::context::Transaction;
+use revm::context::{Block as _, Transaction};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt::Write,
@@ -620,6 +620,11 @@ impl TestArgs {
         let known_contracts = runner.known_contracts.clone();
 
         let libraries = runner.libraries.clone();
+        let network_profile = runner.tcfg.network_profile;
+        let network_context = NetworkExecutionContext::new(
+            runner.tcfg.evm_env.cfg_env.chain_id,
+            runner.tcfg.evm_env.block_env.timestamp().saturating_to(),
+        );
 
         // Run tests in a streaming fashion.
         let (tx, rx) = channel::<(String, SuiteResult)>();
@@ -645,7 +650,8 @@ impl TestArgs {
             .with_known_contracts(&known_contracts)
             .with_label_disabled(self.disable_labels)
             .with_verbosity(verbosity)
-            .with_chain_id(remote_chain.map(|c| c.id()));
+            .with_chain_id(remote_chain.map(|c| c.id()))
+            .with_network_profile(network_profile, network_context);
         // Signatures are of no value for gas reports.
         if !self.gas_report {
             builder =

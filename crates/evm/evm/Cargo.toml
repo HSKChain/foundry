@@ -70,4 +70,5 @@ hashkey = [
     "foundry-config/hashkey",
     "foundry-evm-core/hashkey",
     "foundry-evm-networks/hashkey",
+    "foundry-evm-traces/hashkey",
 ]
