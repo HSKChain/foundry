@@ -1298,10 +1298,16 @@ impl<N: Network> Backend<N> {
         DB: StateDB<Error = DatabaseError>,
     {
         let inspector = self.build_mining_inspector();
+        let mut execution_evm_env = evm_env.clone();
+        if pool_transactions.iter().any(|tx| tx.pending_transaction.transaction.is_impersonated()) {
+            // Impersonated transactions bypass gas funding, but pool validation still requires
+            // enough balance to transfer a non-zero value.
+            execution_evm_env.cfg_env.disable_balance_check = true;
+        }
 
         macro_rules! run {
             ($evm:expr) => {{
-                self.inject_precompiles($evm.precompiles_mut(), evm_env);
+                self.inject_precompiles($evm.precompiles_mut(), &execution_evm_env);
                 let mut executor = AnvilBlockExecutor::new($evm, parent_hash, spec_id);
                 executor.apply_pre_execution_changes().expect("pre-execution changes failed");
                 let pool_result = execute_pool_transactions(
@@ -1320,8 +1326,11 @@ impl<N: Network> Backend<N> {
 
         if self.is_optimism() {
             let op_env = EvmEnv::new(
-                evm_env.cfg_env.clone().with_spec_and_mainnet_gas_params(OpSpecId::ISTHMUS),
-                evm_env.block_env.clone(),
+                execution_evm_env
+                    .cfg_env
+                    .clone()
+                    .with_spec_and_mainnet_gas_params(OpSpecId::ISTHMUS),
+                execution_evm_env.block_env.clone(),
             );
             let mut evm =
                 OpEvmFactory::<OpTx>::default().create_evm_with_inspector(db, op_env, inspector);
@@ -1329,12 +1338,12 @@ impl<N: Network> Backend<N> {
         } else if self.is_tempo() {
             let hardfork = TempoHardfork::from(self.hardfork);
             let tempo_env = EvmEnv::new(
-                evm_env
+                execution_evm_env
                     .cfg_env
                     .clone()
                     .with_spec_and_gas_params(hardfork, tempo_gas_params(hardfork)),
                 TempoBlockEnv {
-                    inner: evm_env.block_env.clone(),
+                    inner: execution_evm_env.block_env.clone(),
                     timestamp_millis_part: 0,
                     ..Default::default()
                 },
@@ -1343,8 +1352,11 @@ impl<N: Network> Backend<N> {
                 TempoEvmFactory::default().create_evm_with_inspector(db, tempo_env, inspector);
             run!(evm)
         } else {
-            let mut evm =
-                EthEvmFactory::default().create_evm_with_inspector(db, evm_env.clone(), inspector);
+            let mut evm = EthEvmFactory::default().create_evm_with_inspector(
+                db,
+                execution_evm_env.clone(),
+                inspector,
+            );
             run!(evm)
         }
     }
@@ -1409,10 +1421,14 @@ impl<N: Network> Backend<N> {
         // Disable nonce check in revm
         evm_env.cfg_env.disable_nonce_check = true;
 
+        let caller = from.unwrap_or_default();
+        if self.cheats().is_impersonated(caller) {
+            evm_env.cfg_env.disable_balance_check = true;
+        }
+
         let gas_price = gas_price.or(max_fee_per_gas).unwrap_or_else(|| {
             self.fees().raw_gas_price().saturating_add(MIN_SUGGESTED_PRIORITY_FEE)
         });
-        let caller = from.unwrap_or_default();
         let to = to.as_ref().and_then(TxKind::to);
         let blob_hashes = blob_versioned_hashes.unwrap_or_default();
         let mut base = TxEnv {
@@ -2071,6 +2087,24 @@ impl<N: Network> Backend<N> {
         let db = self.db.write().await;
         // apply the genesis.json alloc
         self.genesis.apply_genesis_json_alloc(db)?;
+
+        // Seed the HashKey B20 baseline only for fresh standalone state. Forks retain the remote
+        // singleton code and feature admission storage.
+        #[cfg(feature = "hashkey")]
+        if !self.is_fork()
+            && let Some(alloc) = self.network_profile.b20_genesis_alloc()
+        {
+            let mut db = self.db.write().await;
+            for (address, code_hash, nonce) in alloc.markers {
+                db.set_code(address, Bytes::from_static(&[0xef]))?;
+                db.set_nonce(address, nonce)?;
+                debug_assert_eq!(db.basic(address)?.unwrap_or_default().code_hash, code_hash);
+            }
+            for (address, slot, value) in alloc.feature_seeds {
+                db.set_storage_at(address, slot.into(), value.into())?;
+            }
+            trace!(target: "backend", "initialized HashKey B20 standalone genesis state");
+        }
 
         // Initialize Tempo precompiles and fee tokens when in Tempo mode (not in fork mode).
         // In fork mode, precompiles are inherited from the forked origin.
@@ -4525,13 +4559,18 @@ where
                 }
                 _ => {
                     // check sufficient funds: `gas * price + value`
-                    let req_funds =
-                        max_cost.checked_add(value.saturating_to()).ok_or_else(|| {
-                            debug!(target: "backend", "[{:?}] cost too high", tx.hash());
-                            InvalidTransactionError::InsufficientFunds
-                        })?;
-                    if account.balance < U256::from(req_funds) {
-                        debug!(target: "backend", "[{:?}] insufficient balance={}, required={} account={:?}", tx.hash(), account.balance, req_funds, *pending.sender());
+                    let required = if pending.transaction.is_impersonated() {
+                        value
+                    } else {
+                        U256::from(max_cost.checked_add(value.saturating_to()).ok_or_else(
+                            || {
+                                debug!(target: "backend", "[{:?}] cost too high", tx.hash());
+                                InvalidTransactionError::InsufficientFunds
+                            },
+                        )?)
+                    };
+                    if account.balance < required {
+                        debug!(target: "backend", "[{:?}] insufficient balance={}, required={} account={:?}", tx.hash(), account.balance, required, *pending.sender());
                         return Err(InvalidTransactionError::InsufficientFunds);
                     }
                 }

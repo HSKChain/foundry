@@ -1407,6 +1407,7 @@ impl EthApi<FoundryNetwork> {
         if gas_price > 0
             && !is_tempo_tx
             && let Some(from) = request.from
+            && !self.is_impersonated(from)
         {
             let mut available_funds = self.backend.get_balance_with_state(state, from)?;
             if let Some(value) = request.value {

@@ -39,7 +39,7 @@ use foundry_evm::{
     opts::EvmOpts,
     traces::{InternalTraceMode, TraceMode, Traces},
 };
-use foundry_evm_networks::ResolvedNetworkProfile;
+use foundry_evm_networks::{NetworkConfigs, ResolvedNetworkProfile};
 use futures::TryFutureExt;
 use revm::{DatabaseRef, context::Block};
 
@@ -107,6 +107,10 @@ pub struct RunArgs {
 
     #[command(flatten)]
     rpc: RpcOpts,
+
+    /// Network selection.
+    #[command(flatten)]
+    networks: NetworkConfigs,
 
     /// The EVM version to use.
     ///
@@ -428,6 +432,9 @@ impl figment::Provider for RunArgs {
         if let Some(evm_version) = self.evm_version {
             map.insert("evm_version".into(), figment::value::Value::serialize(evm_version)?);
         }
+        if let Some(network) = self.networks.active_network_name() {
+            map.insert("network".into(), network.into());
+        }
 
         Ok(Map::from([(Config::selected_profile(), map)]))
     }
@@ -436,7 +443,6 @@ impl figment::Provider for RunArgs {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use foundry_evm_networks::NetworkConfigs;
 
     #[test]
     fn cast_execution_dispatches_from_resolved_profiles() {
@@ -453,5 +459,13 @@ mod tests {
             network_dispatch_kind(NetworkConfigs::with_hashkey().resolve()),
             NetworkDispatchKind::Optimism
         );
+    }
+
+    #[cfg(feature = "hashkey")]
+    #[test]
+    fn parses_hashkey_network() {
+        let args = RunArgs::parse_from(["cast run", "0x00", "--network", "hashkey"]);
+
+        assert_eq!(args.networks.active_network_name(), Some("hashkey"));
     }
 }

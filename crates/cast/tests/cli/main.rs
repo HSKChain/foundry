@@ -25,6 +25,8 @@ use std::{fs, path::Path, str::FromStr};
 extern crate foundry_test_utils;
 
 mod erc20;
+#[cfg(feature = "hashkey")]
+mod hashkey;
 mod selectors;
 
 casttest!(print_short_version, |_prj, cmd| {
