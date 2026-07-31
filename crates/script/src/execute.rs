@@ -21,14 +21,15 @@ use foundry_common::{
     fmt::{format_token, format_token_raw},
     provider::ProviderBuilder,
 };
-use foundry_config::NamedChain;
+use foundry_config::{Chain, NamedChain};
 use foundry_debugger::Debugger;
 use foundry_evm::{
+    construction::DecoderConfig,
     core::evm::FoundryEvmNetwork,
     decode::decode_console_logs,
     inspectors::cheatcodes::BroadcastableTransactions,
     traces::{
-        CallTraceDecoder, CallTraceDecoderBuilder, TraceKind, decode_trace_arena,
+        CallTraceDecoder, TraceKind, decode_trace_arena,
         identifier::{SignaturesIdentifier, TraceIdentifiers},
         render_trace_arena,
     },
@@ -340,18 +341,22 @@ impl<FEN: FoundryEvmNetwork> ExecutedState<FEN> {
         &self,
         known_contracts: &ContractsByArtifact,
     ) -> Result<CallTraceDecoder> {
-        let chain_id = self.script_config.evm_opts.get_remote_chain_id().await;
+        let prepared =
+            self.script_config.prepared.as_ref().ok_or_else(|| {
+                eyre::eyre!("script execution is missing prepared EVM construction")
+            })?;
+        let chain_id = prepared.fork_chain_id().map(Chain::from_id);
 
-        let mut decoder = CallTraceDecoderBuilder::new()
-            .with_labels(self.execution_result.labeled_addresses.clone())
-            .with_verbosity(self.script_config.evm_opts.verbosity)
-            .with_known_contracts(known_contracts)
-            .with_signature_identifier(SignaturesIdentifier::from_config(
-                &self.script_config.config,
-            )?)
-            .with_label_disabled(self.args.disable_labels)
-            .with_chain_id(chain_id.map(|c| c.id()))
-            .build();
+        let mut decoder = prepared.trace_decoder(
+            DecoderConfig::default()
+                .labels(self.execution_result.labeled_addresses.clone())
+                .verbosity(self.script_config.evm_opts.verbosity)
+                .known_contracts(known_contracts.clone())
+                .signature_identifier(SignaturesIdentifier::from_config(
+                    &self.script_config.config,
+                )?)
+                .label_disabled(self.args.disable_labels),
+        );
 
         let mut identifier = TraceIdentifiers::new()
             .with_local(known_contracts)

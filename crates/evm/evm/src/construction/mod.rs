@@ -5,7 +5,8 @@ use crate::{
     inspectors::{CheatsConfig, InspectorStackBuilder},
 };
 use alloy_evm::{Evm, EvmFactory};
-use alloy_primitives::{Address, BlockNumber};
+use alloy_primitives::{Address, BlockNumber, map::AddressHashMap};
+use foundry_cheatcodes::Wallets;
 use foundry_common::{ContractsByArtifact, compile::Analysis};
 use foundry_config::Config;
 use foundry_evm_core::{
@@ -137,6 +138,32 @@ pub struct PreparedEvm<FEN: FoundryEvmNetwork> {
 }
 
 impl<FEN: FoundryEvmNetwork> PreparedEvm<FEN> {
+    /// Refreshes environment data while reusing this preparation's backend state and profile.
+    pub async fn refresh(&self, evm_opts: &EvmOpts) -> Result<Self, EvmConstructionError>
+    where
+        SpecFor<FEN>: Into<revm::primitives::hardfork::SpecId> + Default + Copy,
+        BlockEnvFor<FEN>: FoundryBlock + Default,
+        TxEnvFor<FEN>: FoundryTransaction + Default,
+    {
+        let (evm_env, tx_env, fork_block_number) = evm_opts
+            .env_with_network_profile::<SpecFor<FEN>, BlockEnvFor<FEN>, TxEnvFor<FEN>>(
+                self.network_profile,
+            )
+            .await
+            .map_err(|error| EvmConstructionError::Environment(error.to_string()))?;
+        let network_context = execution_context::<FEN>(&evm_env);
+
+        Ok(Self {
+            backend: self.backend.clone(),
+            evm_env,
+            tx_env,
+            fork_block_number,
+            network_profile: self.network_profile,
+            network_context,
+            is_fork: evm_opts.fork_url.is_some(),
+        })
+    }
+
     /// Returns the chain ID of the prepared environment.
     pub const fn chain_id(&self) -> u64 {
         self.network_context.chain_id
@@ -155,6 +182,25 @@ impl<FEN: FoundryEvmNetwork> PreparedEvm<FEN> {
     /// Returns the executing chain ID when this preparation uses a remote fork.
     pub const fn fork_chain_id(&self) -> Option<u64> {
         if self.is_fork { Some(self.network_context.chain_id) } else { None }
+    }
+
+    /// Returns the prepared EVM environment for read-only consumer projections.
+    pub const fn evm_env(&self) -> &EvmEnvFor<FEN> {
+        &self.evm_env
+    }
+
+    /// Returns the prepared transaction environment for read-only consumer projections.
+    pub const fn tx_env(&self) -> &TxEnvFor<FEN> {
+        &self.tx_env
+    }
+
+    /// Applies consumer environment changes before deriving the construction snapshot.
+    pub fn configure_env(
+        &mut self,
+        configure: impl FnOnce(&mut EvmEnvFor<FEN>, &mut TxEnvFor<FEN>),
+    ) {
+        configure(&mut self.evm_env, &mut self.tx_env);
+        self.network_context = execution_context::<FEN>(&self.evm_env);
     }
 
     /// Validates precompile composition before starting consumer execution.
@@ -178,9 +224,11 @@ impl<FEN: FoundryEvmNetwork> PreparedEvm<FEN> {
         config: ExecutorConfig<FEN>,
     ) -> Result<ConstructedEvm<FEN>, EvmConstructionError> {
         self.validate()?;
-        let Self { backend, evm_env, tx_env, network_profile, network_context, .. } = self;
+        let Self { backend, evm_env, mut tx_env, network_profile, network_context, .. } = self;
 
-        let ExecutorConfig { inspectors, gas_limit, spec, legacy_assertions, .. } = config;
+        let ExecutorConfig { inspectors, gas_limit, spec, legacy_assertions, fee_token, .. } =
+            config;
+        tx_env.set_fee_token(fee_token);
         let mut builder = ExecutorBuilder::default()
             .inspectors(|_| inspectors.network_profile(network_profile))
             .spec_id_opt(spec)
@@ -213,6 +261,7 @@ pub struct ExecutorConfig<FEN: FoundryEvmNetwork> {
     gas_limit: Option<u64>,
     spec: Option<SpecFor<FEN>>,
     legacy_assertions: bool,
+    fee_token: Option<Address>,
     marker: PhantomData<FEN>,
 }
 
@@ -223,6 +272,7 @@ impl<FEN: FoundryEvmNetwork> Default for ExecutorConfig<FEN> {
             gas_limit: None,
             spec: None,
             legacy_assertions: false,
+            fee_token: None,
             marker: PhantomData,
         }
     }
@@ -238,6 +288,12 @@ impl<FEN: FoundryEvmNetwork> ExecutorConfig<FEN> {
     /// Enables cheatcodes with the supplied consumer configuration.
     pub fn cheatcodes(mut self, config: Arc<CheatsConfig>) -> Self {
         self.inspectors = self.inspectors.cheatcodes(config);
+        self
+    }
+
+    /// Adds script wallets to cheatcode execution.
+    pub fn wallets(mut self, wallets: Wallets) -> Self {
+        self.inspectors = self.inspectors.wallets(wallets);
         self
     }
 
@@ -283,6 +339,17 @@ impl<FEN: FoundryEvmNetwork> ExecutorConfig<FEN> {
         self
     }
 
+    /// Optionally overrides the EVM spec used by the executor.
+    pub const fn spec_id_opt(self, spec: Option<SpecFor<FEN>>) -> Self {
+        if let Some(spec) = spec { self.spec_id(spec) } else { self }
+    }
+
+    /// Sets the Tempo fee token on the transaction environment.
+    pub const fn fee_token(mut self, fee_token: Option<Address>) -> Self {
+        self.fee_token = fee_token;
+        self
+    }
+
     /// Enables legacy DSTest assertion probing.
     pub const fn legacy_assertions(mut self, enabled: bool) -> Self {
         self.legacy_assertions = enabled;
@@ -314,6 +381,11 @@ impl<FEN: FoundryEvmNetwork> ConstructedEvm<FEN> {
         self.decoder.decode_function(trace).await
     }
 
+    /// Returns the decoder bound to this construction snapshot.
+    pub const fn decoder(&self) -> &CallTraceDecoder {
+        &self.decoder
+    }
+
     /// Returns the coherent executor projection for consumers that own execution.
     pub fn into_executor(self) -> Executor<FEN> {
         self.executor
@@ -325,6 +397,7 @@ impl<FEN: FoundryEvmNetwork> ConstructedEvm<FEN> {
 #[must_use = "decoder config does nothing unless passed to `PreparedEvm::trace_decoder`"]
 pub struct DecoderConfig {
     known_contracts: Option<ContractsByArtifact>,
+    labels: AddressHashMap<String>,
     label_disabled: bool,
     verbosity: u8,
     signature_identifier: Option<SignaturesIdentifier>,
@@ -335,6 +408,12 @@ impl DecoderConfig {
     /// Adds locally compiled contracts and their ABIs.
     pub fn known_contracts(mut self, contracts: ContractsByArtifact) -> Self {
         self.known_contracts = Some(contracts);
+        self
+    }
+
+    /// Adds address labels known by the consumer.
+    pub fn labels(mut self, labels: impl IntoIterator<Item = (Address, String)>) -> Self {
+        self.labels.extend(labels);
         self
     }
 
@@ -416,12 +495,14 @@ fn build_decoder(
 ) -> CallTraceDecoder {
     let DecoderConfig {
         known_contracts,
+        labels,
         label_disabled,
         verbosity,
         signature_identifier,
         debug_identifier,
     } = config;
     let mut builder = CallTraceDecoderBuilder::new()
+        .with_labels(labels)
         .with_label_disabled(label_disabled)
         .with_verbosity(verbosity)
         .with_chain_id(chain_id)

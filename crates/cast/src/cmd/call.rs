@@ -45,7 +45,6 @@ use foundry_evm::{
 use foundry_evm_networks::{NetworkConfigs, NetworkExecutionContext, ResolvedNetworkProfile};
 use foundry_wallets::WalletOpts;
 use regex::Regex;
-use revm::context::Block as _;
 use std::{str::FromStr, sync::LazyLock};
 
 // matches override pattern <address>:<slot>:<value>
@@ -320,29 +319,27 @@ impl CallArgs {
             }
 
             let create2_deployer = evm_opts.create2_deployer;
-            let (mut evm_env, tx_env, fork, chain, network_profile) =
-                TracingExecutor::<FEN>::get_fork_material(&mut config, evm_opts, network_profile)
-                    .await?;
+            let (mut prepared, chain) =
+                TracingExecutor::<FEN>::prepare(&mut config, evm_opts, network_profile).await?;
+            prepared.configure_env(|evm_env, _| {
+                // modify settings that usually set in eth_call
+                evm_env.cfg_env.disable_block_gas_limit = true;
+                evm_env.cfg_env.tx_gas_limit_cap = Some(u64::MAX);
+                evm_env.block_env.set_gas_limit(u64::MAX);
 
-            // modify settings that usually set in eth_call
-            evm_env.cfg_env.disable_block_gas_limit = true;
-            evm_env.cfg_env.tx_gas_limit_cap = Some(u64::MAX);
-            evm_env.block_env.set_gas_limit(u64::MAX);
-
-            // Apply the block overrides.
-            if let Some(block_overrides) = block_overrides {
-                if let Some(number) = block_overrides.number {
-                    evm_env.block_env.set_number(number.to());
+                // Apply the block overrides.
+                if let Some(block_overrides) = block_overrides {
+                    if let Some(number) = block_overrides.number {
+                        evm_env.block_env.set_number(number.to());
+                    }
+                    if let Some(time) = block_overrides.time {
+                        evm_env.block_env.set_timestamp(U256::from(time));
+                    }
                 }
-                if let Some(time) = block_overrides.time {
-                    evm_env.block_env.set_timestamp(U256::from(time));
-                }
-            }
+            });
 
-            let network_context = NetworkExecutionContext::new(
-                evm_env.cfg_env.chain_id,
-                evm_env.block_env.timestamp().saturating_to(),
-            );
+            let network_context =
+                NetworkExecutionContext::new(prepared.chain_id(), prepared.timestamp());
 
             let trace_mode = TraceMode::Call
                 .with_debug(debug)
@@ -353,11 +350,9 @@ impl CallArgs {
                 })
                 .with_state_changes(shell::verbosity() > 4);
             let mut executor = TracingExecutor::<FEN>::new(
-                (evm_env, tx_env),
-                fork,
+                prepared,
                 evm_version,
                 trace_mode,
-                network_profile,
                 create2_deployer,
                 state_overrides,
             )?;

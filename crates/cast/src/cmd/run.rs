@@ -207,48 +207,50 @@ impl RunArgs {
         config.fork_block_number = Some(tx_block_number - 1);
 
         let create2_deployer = evm_opts.create2_deployer;
-        let (block, (mut evm_env, tx_env, fork, chain, network_profile)) = tokio::try_join!(
+        let (block, (mut prepared, chain)) = tokio::try_join!(
             // fetch the block the transaction was mined in
             provider.get_block(tx_block_number.into()).full().into_future().map_err(Into::into),
-            TracingExecutor::<FEN>::get_fork_material(&mut config, evm_opts, network_profile,)
+            TracingExecutor::<FEN>::prepare(&mut config, evm_opts, network_profile,)
         )?;
 
         let mut evm_version = self.evm_version;
+        prepared.configure_env(|evm_env, _| {
+            evm_env.cfg_env.disable_block_gas_limit = self.disable_block_gas_limit;
 
-        evm_env.cfg_env.disable_block_gas_limit = self.disable_block_gas_limit;
-
-        // By default do not enforce transaction gas limits imposed by Osaka (EIP-7825).
-        // Users can opt-in to enable these limits by setting `enable_tx_gas_limit` to true.
-        if !self.enable_tx_gas_limit {
-            evm_env.cfg_env.tx_gas_limit_cap = Some(u64::MAX);
-        }
-
-        evm_env.cfg_env.limit_contract_code_size = None;
-        evm_env.block_env.set_number(U256::from(tx_block_number));
-
-        if let Some(block) = &block {
-            evm_env.block_env = block_env_from_header(block.header());
-
-            // Resolve the correct spec for the block using the same approach as reth: walk
-            // known chain activation conditions to find the latest active fork. Falls back
-            // to a blob-gas heuristic for unknown chains.
-            if evm_version.is_none() {
-                if let Some(hardfork) = FoundryHardfork::from_chain_and_timestamp(
-                    evm_env.cfg_env.chain_id,
-                    block.header().timestamp(),
-                ) {
-                    evm_env.cfg_env.set_spec_and_mainnet_gas_params(hardfork.into());
-                } else if block.header().excess_blob_gas().is_some() {
-                    // TODO: add glamsterdam header field checks in the future
-                    evm_version = Some(EvmVersion::Cancun);
-                }
+            // By default do not enforce transaction gas limits imposed by Osaka (EIP-7825).
+            // Users can opt-in to enable these limits by setting `enable_tx_gas_limit` to true.
+            if !self.enable_tx_gas_limit {
+                evm_env.cfg_env.tx_gas_limit_cap = Some(u64::MAX);
             }
-            apply_chain_and_block_specific_env_changes::<FEN::Network, _, _>(
-                &mut evm_env,
-                block,
-                network_profile,
-            );
-        }
+
+            evm_env.cfg_env.limit_contract_code_size = None;
+            evm_env.block_env.set_number(U256::from(tx_block_number));
+
+            if let Some(block) = &block {
+                evm_env.block_env = block_env_from_header(block.header());
+
+                // Resolve the correct spec for the block using the same approach as reth: walk
+                // known chain activation conditions to find the latest active fork. Falls back
+                // to a blob-gas heuristic for unknown chains.
+                if evm_version.is_none() {
+                    if let Some(hardfork) = FoundryHardfork::from_chain_and_timestamp(
+                        evm_env.cfg_env.chain_id,
+                        block.header().timestamp(),
+                    ) {
+                        evm_env.cfg_env.set_spec_and_mainnet_gas_params(hardfork.into());
+                    } else if block.header().excess_blob_gas().is_some() {
+                        // TODO: add glamsterdam header field checks in the future
+                        evm_version = Some(EvmVersion::Cancun);
+                    }
+                }
+                apply_chain_and_block_specific_env_changes::<FEN::Network, _, _>(
+                    evm_env,
+                    block,
+                    network_profile,
+                );
+            }
+        });
+        let mut evm_env = prepared.evm_env().clone();
 
         let trace_mode = TraceMode::Call
             .with_debug(self.debug)
@@ -258,15 +260,8 @@ impl RunArgs {
                 InternalTraceMode::None
             })
             .with_state_changes(shell::verbosity() > 4);
-        let mut executor = TracingExecutor::<FEN>::new(
-            (evm_env.clone(), tx_env),
-            fork,
-            evm_version,
-            trace_mode,
-            network_profile,
-            create2_deployer,
-            None,
-        )?;
+        let mut executor =
+            TracingExecutor::<FEN>::new(prepared, evm_version, trace_mode, create2_deployer, None)?;
 
         evm_env.cfg_env.set_spec_and_mainnet_gas_params(executor.spec_id());
 

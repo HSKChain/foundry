@@ -45,25 +45,21 @@ use foundry_config::{
     },
 };
 use foundry_evm::{
-    backend::Backend,
+    construction::{EvmConstruction, ExecutorConfig, PreparedEvm},
     core::{
-        Breakpoints, FoundryTransaction,
-        evm::{
-            BlockEnvFor, EthEvmNetwork, FoundryEvmNetwork, OpEvmNetwork, SpecFor, TempoEvmNetwork,
-            TxEnvFor,
-        },
+        Breakpoints,
+        evm::{EthEvmNetwork, FoundryEvmNetwork, OpEvmNetwork, TempoEvmNetwork},
         tempo::PATH_USD_ADDRESS,
     },
-    executors::ExecutorBuilder,
     inspectors::{
         CheatsConfig,
         cheatcodes::{BroadcastableTransactions, Wallets},
     },
     opts::EvmOpts,
-    revm::{context::Block, interpreter::InstructionResult},
+    revm::interpreter::InstructionResult,
     traces::{TraceMode, Traces},
 };
-use foundry_evm_networks::{NetworkConfigs, NetworkExecutionContext, ResolvedNetworkProfile};
+use foundry_evm_networks::{NetworkConfigs, ResolvedNetworkProfile};
 use foundry_wallets::MultiWalletOpts;
 use serde::Serialize;
 use std::path::PathBuf;
@@ -718,8 +714,10 @@ pub struct ScriptConfig<FEN: FoundryEvmNetwork> {
     /// Immutable runtime network profile.
     pub network_profile: ResolvedNetworkProfile,
     pub sender_nonce: u64,
-    /// Maps a rpc url to a backend
-    pub backends: HashMap<String, Backend<FEN>>,
+    /// Maps an RPC URL to reusable opaque EVM preparation state.
+    pub preparations: HashMap<String, PreparedEvm<FEN>>,
+    /// The preparation snapshot used for the latest script execution.
+    pub prepared: Option<PreparedEvm<FEN>>,
     /// Whether to batch all broadcast transactions into a single Tempo batch transaction.
     pub batch: bool,
     /// Tempo fee token address for paying transaction fees.
@@ -746,7 +744,8 @@ impl<FEN: FoundryEvmNetwork> ScriptConfig<FEN> {
             evm_opts,
             network_profile,
             sender_nonce,
-            backends: HashMap::default(),
+            preparations: HashMap::default(),
+            prepared: None,
             batch,
             fee_token,
         })
@@ -783,79 +782,57 @@ impl<FEN: FoundryEvmNetwork> ScriptConfig<FEN> {
         debug: bool,
     ) -> Result<ScriptRunner<FEN>> {
         trace!("preparing script runner");
-        let (evm_env, mut tx_env, fork_block) = self
-            .evm_opts
-            .env_with_network_profile::<SpecFor<FEN>, BlockEnvFor<FEN>, TxEnvFor<FEN>>(
-                self.network_profile,
-            )
-            .await?;
-        let network_context = NetworkExecutionContext::new(
-            evm_env.cfg_env.chain_id,
-            evm_env.block_env.timestamp().saturating_to(),
-        );
-
-        let db = if let Some(fork_url) = self.evm_opts.fork_url.as_ref() {
-            match self.backends.get(fork_url) {
-                Some(db) => db.clone(),
+        let prepared = if let Some(fork_url) = self.evm_opts.fork_url.as_ref() {
+            match self.preparations.get(fork_url) {
+                Some(prepared) => prepared.refresh(&self.evm_opts).await?,
                 None => {
-                    let fork = self.evm_opts.get_fork_with_network_profile(
+                    let prepared = EvmConstruction::prepare::<FEN>(
+                        &self.evm_opts,
                         &self.config,
-                        evm_env.cfg_env.chain_id,
-                        fork_block,
                         self.network_profile,
-                    );
-                    let backend = Backend::spawn_with_network_profile(
-                        fork,
-                        self.network_profile,
-                        network_context,
-                    )?;
-                    self.backends.insert(fork_url.clone(), backend.clone());
-                    backend
+                    )
+                    .await?;
+                    self.preparations.insert(fork_url.clone(), prepared.clone());
+                    prepared
                 }
             }
         } else {
             // It's only really `None`, when we don't pass any `--fork-url`. And if so, there is
             // no need to cache it, since there won't be any onchain simulation that we'd need
             // to cache the backend for.
-            Backend::spawn_with_network_profile(None, self.network_profile, network_context)?
+            EvmConstruction::prepare::<FEN>(&self.evm_opts, &self.config, self.network_profile)
+                .await?
         };
 
         // We need to enable tracing to decode contract names: local or external.
-        let mut builder = ExecutorBuilder::default()
-            .inspectors(|stack| {
-                stack
-                    .logs(self.config.live_logs)
-                    .trace_mode(if debug { TraceMode::Debug } else { TraceMode::Call })
-                    .network_profile(self.network_profile)
-                    .create2_deployer(self.evm_opts.create2_deployer)
-            })
+        let mut executor_config = ExecutorConfig::default()
+            .logs(self.config.live_logs)
+            .trace_mode(if debug { TraceMode::Debug } else { TraceMode::Call })
+            .create2_deployer(self.evm_opts.create2_deployer)
             .spec_id(self.config.evm_spec_id())
             .gas_limit(self.evm_opts.gas_limit())
-            .legacy_assertions(self.config.legacy_assertions);
+            .legacy_assertions(self.config.legacy_assertions)
+            .fee_token(self.fee_token);
 
         if let Some((known_contracts, script_wallets, target)) = cheats_data {
-            builder = builder.inspectors(|stack| {
-                stack
-                    .cheatcodes(
-                        CheatsConfig::new(
-                            &self.config,
-                            self.evm_opts.clone(),
-                            Some(known_contracts),
-                            Some(target),
-                            self.fee_token,
-                        )
-                        .into(),
+            executor_config = executor_config
+                .cheatcodes(
+                    CheatsConfig::new(
+                        &self.config,
+                        self.evm_opts.clone(),
+                        Some(known_contracts),
+                        Some(target),
+                        self.fee_token,
                     )
-                    .wallets(script_wallets)
-                    .enable_isolation(self.evm_opts.isolate)
-            });
+                    .into(),
+                )
+                .wallets(script_wallets)
+                .enable_isolation(self.evm_opts.isolate);
         }
 
-        // Propagate fee token to the transaction environment so that internal EVM calls
-        // (e.g. script deployment, setUp) use the correct fee token for Tempo networks.
-        tx_env.set_fee_token(self.fee_token);
-
-        Ok(ScriptRunner::new(builder.build(evm_env, tx_env, db), self.evm_opts.clone()))
+        let executor = prepared.clone().construct(executor_config)?.into_executor();
+        self.prepared = Some(prepared);
+        Ok(ScriptRunner::new(executor, self.evm_opts.clone()))
     }
 }
 
@@ -863,7 +840,11 @@ impl<FEN: FoundryEvmNetwork> ScriptConfig<FEN> {
 mod tests {
     use super::*;
     use alloy_network::Ethereum;
+    #[cfg(feature = "hashkey")]
+    use alloy_primitives::address;
     use foundry_config::{NamedChain, UnresolvedEnvVarError};
+    #[cfg(feature = "hashkey")]
+    use foundry_evm::{construction::DecoderConfig, traces::CallTrace};
     use std::fs;
     use tempfile::tempdir;
 
@@ -875,7 +856,7 @@ mod tests {
     }
 
     #[cfg(feature = "hashkey")]
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn script_config_preserves_hashkey_profile_for_local_simulation() {
         let mut evm_opts = EvmOpts::default();
         evm_opts.networks = NetworkConfigs::with_hashkey();
@@ -893,6 +874,17 @@ mod tests {
         script_config.evm_opts.networks = NetworkConfigs::default();
         assert_eq!(script_config.network_profile, network_profile);
         assert!(script_config.network_profile.is_hashkey());
+
+        let _runner = script_config.get_runner().await.unwrap();
+        let prepared = script_config.prepared.as_ref().unwrap();
+        let trace = CallTrace {
+            address: address!("B20F000000000000000000000000000000000000"),
+            ..Default::default()
+        };
+        assert_eq!(
+            prepared.trace_decoder(DecoderConfig::default()).decode_function(&trace).await.label,
+            Some("B20Factory".to_string())
+        );
     }
 
     #[test]

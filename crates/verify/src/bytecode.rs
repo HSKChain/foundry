@@ -28,7 +28,7 @@ use foundry_cli::{
 use foundry_common::{
     SYSTEM_TRANSACTION_TYPE, is_known_system_sender, provider::ProviderBuilder, shell,
 };
-use foundry_compilers::{artifacts::EvmVersion, info::ContractInfo};
+use foundry_compilers::info::ContractInfo;
 use foundry_config::{Chain, Config, figment, impl_figment_convert};
 use foundry_evm::{
     constants::DEFAULT_CREATE2_DEPLOYER,
@@ -274,17 +274,31 @@ impl VerifyBytecodeArgs {
             // Deploy at genesis
             let gen_blk_num = 0_u64;
             let (mut fork_config, evm_opts) = config.clone().load_config_and_evm_opts()?;
-            let (mut evm_env, _, mut executor) = crate::utils::get_tracing_executor::<FEN>(
+            let evm_version = etherscan_metadata.evm_version()?.unwrap_or_default();
+            let (mut prepared, create2_deployer) = crate::utils::get_tracing_preparation::<FEN>(
                 &mut fork_config,
                 gen_blk_num,
-                etherscan_metadata.evm_version()?.unwrap_or(EvmVersion::default()),
+                evm_version,
                 evm_opts,
                 network_profile,
             )
             .await?;
 
-            evm_env.block_env.set_number(U256::ZERO);
             let genesis_block = provider.get_block(gen_blk_num.into()).full().await?;
+            prepared.configure_env(|evm_env, _| {
+                evm_env.block_env.set_number(U256::ZERO);
+                if let Some(ref block) = genesis_block {
+                    configure_env_block::<FEN>(evm_env, block, network_profile);
+                }
+            });
+            let evm_env = prepared.evm_env().clone();
+            let mut executor = foundry_evm::executors::TracingExecutor::<FEN>::new(
+                prepared,
+                Some(evm_version),
+                foundry_evm::traces::TraceMode::Call,
+                create2_deployer,
+                None,
+            )?;
 
             // Setup genesis tx_env and evm_evm.
             let deployer = Address::with_last_byte(0x1);
@@ -297,7 +311,6 @@ impl VerifyBytecodeArgs {
             tx_env.set_gas_price(evm_env.block_env.basefee() as u128);
 
             if let Some(ref block) = genesis_block {
-                configure_env_block::<FEN>(&mut evm_env, block, network_profile);
                 tx_env.set_gas_limit(block.header().gas_limit());
                 tx_env.set_gas_price(block.header().base_fee_per_gas().unwrap_or_default() as u128);
             }
@@ -482,16 +495,30 @@ impl VerifyBytecodeArgs {
 
             // Fork the chain at `simulation_block`.
             let (mut fork_config, evm_opts) = config.clone().load_config_and_evm_opts()?;
-            let (mut evm_env, _tx_env, mut executor) = crate::utils::get_tracing_executor::<FEN>(
+            let evm_version = etherscan_metadata.evm_version()?.unwrap_or_default();
+            let (mut prepared, create2_deployer) = crate::utils::get_tracing_preparation::<FEN>(
                 &mut fork_config,
                 simulation_block - 1, // env.fork_block_number
-                etherscan_metadata.evm_version()?.unwrap_or(EvmVersion::default()),
+                evm_version,
                 evm_opts,
                 network_profile,
             )
             .await?;
-            evm_env.block_env.set_number(U256::from(simulation_block));
             let block = provider.get_block(simulation_block.into()).full().await?;
+            prepared.configure_env(|evm_env, _| {
+                evm_env.block_env.set_number(U256::from(simulation_block));
+                if let Some(ref block) = block {
+                    configure_env_block::<FEN>(evm_env, block, network_profile);
+                }
+            });
+            let evm_env = prepared.evm_env().clone();
+            let mut executor = foundry_evm::executors::TracingExecutor::<FEN>::new(
+                prepared,
+                Some(evm_version),
+                foundry_evm::traces::TraceMode::Call,
+                create2_deployer,
+                None,
+            )?;
 
             // Workaround for the NonceTooHigh issue as we're not simulating prior txs of the same
             // block.
@@ -503,8 +530,6 @@ impl VerifyBytecodeArgs {
                 provider.get_transaction_count(transaction.from()).block_id(prev_block_id).await?;
 
             if let Some(ref block) = block {
-                configure_env_block::<FEN>(&mut evm_env, block, network_profile);
-
                 let BlockTransactions::Full(txs) = block.transactions() else {
                     return Err(eyre::eyre!("Could not get block txs"));
                 };

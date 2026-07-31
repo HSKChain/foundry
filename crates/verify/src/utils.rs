@@ -15,6 +15,7 @@ use foundry_compilers::artifacts::{BytecodeHash, CompactContractBytecode, EvmVer
 use foundry_config::Config;
 use foundry_evm::{
     constants::DEFAULT_CREATE2_DEPLOYER,
+    construction::PreparedEvm,
     core::{
         FoundryBlock as _,
         decode::RevertDecoder,
@@ -22,7 +23,6 @@ use foundry_evm::{
     },
     executors::TracingExecutor,
     opts::EvmOpts,
-    traces::TraceMode,
     utils::{apply_chain_and_block_specific_env_changes, block_env_from_header},
 };
 use foundry_evm_networks::ResolvedNetworkProfile;
@@ -263,31 +263,20 @@ pub fn check_args_len(
     Ok(())
 }
 
-pub async fn get_tracing_executor<FEN: FoundryEvmNetwork>(
+pub async fn get_tracing_preparation<FEN: FoundryEvmNetwork>(
     fork_config: &mut Config,
     fork_blk_num: u64,
     evm_version: EvmVersion,
     evm_opts: EvmOpts,
     network_profile: ResolvedNetworkProfile,
-) -> Result<(EvmEnvFor<FEN>, TxEnvFor<FEN>, TracingExecutor<FEN>)> {
+) -> Result<(PreparedEvm<FEN>, Address)> {
     fork_config.fork_block_number = Some(fork_blk_num);
     fork_config.evm_version = evm_version;
 
     let create2_deployer = evm_opts.create2_deployer;
-    let (evm_env, tx_env, fork, _chain, network_profile) =
-        TracingExecutor::<FEN>::get_fork_material(fork_config, evm_opts, network_profile).await?;
-
-    let executor = TracingExecutor::<FEN>::new(
-        (evm_env.clone(), tx_env.clone()),
-        fork,
-        Some(fork_config.evm_version),
-        TraceMode::Call,
-        network_profile,
-        create2_deployer,
-        None,
-    )?;
-
-    Ok((evm_env, tx_env, executor))
+    let (prepared, _) =
+        TracingExecutor::<FEN>::prepare(fork_config, evm_opts, network_profile).await?;
+    Ok((prepared, create2_deployer))
 }
 
 pub fn configure_env_block<FEN: FoundryEvmNetwork>(

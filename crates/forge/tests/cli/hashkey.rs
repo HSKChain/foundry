@@ -53,3 +53,44 @@ network = "hashkey"
 
     cmd.args(["test", "--match-contract", "B20ProtectionTest"]).assert_success();
 });
+
+forgetest_init!(hashkey_b20_script_construction, |prj, cmd| {
+    prj.add_source("B20.sol", include_str!("../../../../testdata/default/hashkey/src/B20.sol"));
+    let script = prj.add_script(
+        "B20.s.sol",
+        r#"
+pragma solidity ^0.8.0;
+
+import {B20Caller} from "../src/B20.sol";
+
+contract B20Script {
+    event AssetCreated(address asset);
+
+    function run() external returns (address asset) {
+        B20Caller caller = new B20Caller();
+        asset = caller.createAsset(keccak256("script"), "Script Asset", "SCRIPT", address(0xA11CE));
+        emit AssetCreated(asset);
+    }
+}
+"#,
+    );
+    prj.create_file(
+        "foundry.toml",
+        r#"
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+network = "hashkey"
+"#,
+    );
+
+    cmd.arg("script").arg(script).arg("-vvvv").assert_success().stdout_eq(str![[r#"
+...
+Script ran successfully.
+[GAS]
+
+== Return ==
+asset: address 0xb2[..]
+"#]]);
+});
