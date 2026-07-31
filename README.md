@@ -43,6 +43,55 @@ See the [installation guide](https://getfoundry.sh/getting-started/installation)
 
 To verify a downloaded release archive or container image, see [Verifying Releases](./SECURITY.md#verifying-releases).
 
+### HashKey B20 local profile
+
+The HSKChain build keeps the standard `forge`, `cast`, `anvil`, and `chisel` binary names and is
+identified by an `-hsk-b20` release tag. For example, install the Linux AMD64 archive for
+`v1.7.1-hsk-b20` with the GitHub CLI:
+
+```sh
+HSK_TAG=v1.7.1-hsk-b20
+gh release download "$HSK_TAG" \
+  --repo mowind/foundry \
+  --pattern "foundry_${HSK_TAG}_linux_amd64.tar.gz"
+tar -xzf "foundry_${HSK_TAG}_linux_amd64.tar.gz"
+mkdir -p "$HOME/.local/bin"
+install forge cast anvil chisel "$HOME/.local/bin"
+```
+
+The same release can be built reproducibly from its tag:
+
+```sh
+git clone https://github.com/mowind/foundry.git foundry-hsk
+cd foundry-hsk
+git checkout v1.7.1-hsk-b20
+cargo build --locked --profile dist \
+  -p forge -p cast -p anvil -p chisel \
+  --features hashkey
+```
+
+Select the standalone local profile explicitly:
+
+```sh
+anvil --network hashkey
+forge test --network hashkey
+cast call --rpc-url http://127.0.0.1:8545 ADDRESS "function()"
+cast run --network hashkey --rpc-url http://127.0.0.1:8545 TRANSACTION_HASH
+chisel --network hashkey
+```
+
+Or make it the project default in `foundry.toml`:
+
+```toml
+[profile.default]
+network = "hashkey"
+```
+
+This profile provides deterministic **local-development** B20 state. Its activation time, admin,
+and feature state are not HashKey mainnet or testnet parameters. See the
+[HashKey B20 local simulation guide](./docs/hashkey-b20.md) and
+[configuration reference](./docs/hashkey-b20-config.md) before using it.
+
 ## Getting Started
 
 Initialize a new project, build and test:
