@@ -301,6 +301,186 @@ impl<N: Network> fmt::Debug for Backend<N> {
     }
 }
 
+/// A transaction-scoped view of Anvil's EVM construction inputs.
+///
+/// The network context is derived exactly once from the executing environment and is reused for
+/// EVM creation, profile-owned precompiles, inspector configuration, and trace decoding.
+struct AnvilEvmConstruction<'a, N: Network> {
+    backend: &'a Backend<N>,
+    evm_env: &'a EvmEnv,
+    network_context: NetworkExecutionContext,
+}
+
+impl<'a, N: Network> AnvilEvmConstruction<'a, N> {
+    fn new(backend: &'a Backend<N>, evm_env: &'a EvmEnv) -> Self {
+        let network_context = NetworkExecutionContext::new(
+            evm_env.cfg_env.chain_id,
+            evm_env.block_env.timestamp.saturating_to(),
+        );
+        Self { backend, evm_env, network_context }
+    }
+
+    fn call_trace_decoder(&self) -> Arc<CallTraceDecoder> {
+        Arc::new(
+            self.backend
+                .call_trace_decoder
+                .as_ref()
+                .clone()
+                .with_network_context(self.network_context),
+        )
+    }
+
+    fn inspector_tx_config(&self) -> InspectorTxConfig {
+        InspectorTxConfig {
+            print_traces: self.backend.print_traces,
+            print_logs: self.backend.print_logs,
+            enable_steps_tracing: self.backend.enable_steps_tracing,
+            call_trace_decoder: self.call_trace_decoder(),
+        }
+    }
+
+    fn inject_precompiles(&self, precompiles: &mut PrecompilesMap) {
+        self.backend
+            .network_profile
+            .inject_precompiles(precompiles, self.network_context)
+            .expect("resolved network profile precompile composition must be compatible");
+
+        if let Some(factory) = &self.backend.precompile_factory {
+            precompiles.extend_precompiles(factory.precompiles());
+        }
+
+        let cheats = Arc::new(self.backend.cheats.clone());
+        if cheats.has_recover_overrides() {
+            let cheat_ecrecover = CheatEcrecover::new(Arc::clone(&cheats));
+            precompiles.apply_precompile(&EC_RECOVER, move |_| {
+                Some(DynPrecompile::new_stateful(
+                    cheat_ecrecover.precompile_id().clone(),
+                    move |input| cheat_ecrecover.call(input),
+                ))
+            });
+        }
+    }
+
+    fn transact_with_inspector_ref<'db, I, DB>(
+        &self,
+        db: &'db DB,
+        inspector: &mut I,
+        tx_env: OpTransaction<TxEnv>,
+    ) -> Result<ResultAndState<HaltReason>, BlockchainError>
+    where
+        DB: DatabaseRef + ?Sized,
+        I: Inspector<EthEvmContext<WrapDatabaseRef<&'db DB>>>
+            + Inspector<OpEvmContext<WrapDatabaseRef<&'db DB>>>
+            + Inspector<TempoContext<WrapDatabaseRef<&'db DB>>>,
+        WrapDatabaseRef<&'db DB>: Database<Error = DatabaseError>,
+    {
+        if self.backend.is_optimism() {
+            let op_env = EvmEnv::new(
+                self.evm_env.cfg_env.clone().with_spec_and_mainnet_gas_params(OpSpecId::ISTHMUS),
+                self.evm_env.block_env.clone(),
+            );
+            let mut evm = OpEvmFactory::default().create_evm_with_inspector(
+                WrapDatabaseRef(db),
+                op_env,
+                inspector,
+            );
+            self.inject_precompiles(evm.precompiles_mut());
+            let result = evm.transact(OpTx(tx_env)).map_err(|e| match e {
+                EVMError::Database(db) => EVMError::Database(db),
+                EVMError::Header(h) => EVMError::Header(h),
+                EVMError::Custom(s) => EVMError::Custom(s),
+                EVMError::CustomAny(err) => EVMError::CustomAny(err),
+                EVMError::Transaction(t) => EVMError::Transaction(t),
+            })?;
+            Ok(ResultAndState {
+                result: result.result.map_haltreason(|h| match h {
+                    OpHaltReason::Base(eth) => eth,
+                    _ => HaltReason::PrecompileError,
+                }),
+                state: result.state,
+            })
+        } else if self.backend.is_tempo() {
+            self.transact_tempo_with_inspector_ref(db, inspector, TempoTxEnv::from(tx_env.base))
+        } else {
+            let mut evm = EthEvmFactory::default().create_evm_with_inspector(
+                WrapDatabaseRef(db),
+                self.evm_env.clone(),
+                inspector,
+            );
+            self.inject_precompiles(evm.precompiles_mut());
+            Ok(evm.transact(tx_env.base)?)
+        }
+    }
+
+    fn transact_envelope_with_inspector_ref<'db, I, DB>(
+        &self,
+        db: &'db DB,
+        inspector: &mut I,
+        tx: &FoundryTxEnvelope,
+        sender: Address,
+    ) -> Result<(ResultAndState<HaltReason>, TxEnv), BlockchainError>
+    where
+        DB: DatabaseRef + ?Sized,
+        I: Inspector<EthEvmContext<WrapDatabaseRef<&'db DB>>>
+            + Inspector<OpEvmContext<WrapDatabaseRef<&'db DB>>>
+            + Inspector<TempoContext<WrapDatabaseRef<&'db DB>>>,
+        WrapDatabaseRef<&'db DB>: Database<Error = DatabaseError>,
+    {
+        if tx.is_tempo() {
+            let tx_env: TempoTxEnv =
+                FromTxWithEncoded::from_encoded_tx(tx, sender, tx.encoded_2718().into());
+            let base = tx_env.inner.clone();
+            let result = self.transact_tempo_with_inspector_ref(db, inspector, tx_env)?;
+            Ok((result, base))
+        } else {
+            let tx_env: OpTransaction<TxEnv> =
+                FromTxWithEncoded::from_encoded_tx(tx, sender, tx.encoded_2718().into());
+            let base = tx_env.base.clone();
+            let result = self.transact_with_inspector_ref(db, inspector, tx_env)?;
+            Ok((result, base))
+        }
+    }
+
+    fn transact_tempo_with_inspector_ref<'db, I, DB>(
+        &self,
+        db: &'db DB,
+        inspector: &mut I,
+        tx_env: TempoTxEnv,
+    ) -> Result<ResultAndState<HaltReason>, BlockchainError>
+    where
+        DB: DatabaseRef + ?Sized,
+        I: Inspector<TempoContext<WrapDatabaseRef<&'db DB>>>,
+        WrapDatabaseRef<&'db DB>: Database<Error = DatabaseError>,
+    {
+        let hardfork = TempoHardfork::from(self.backend.hardfork);
+        let tempo_env = EvmEnv::new(
+            self.evm_env
+                .cfg_env
+                .clone()
+                .with_spec_and_gas_params(hardfork, tempo_gas_params(hardfork)),
+            TempoBlockEnv {
+                inner: self.evm_env.block_env.clone(),
+                timestamp_millis_part: 0,
+                ..Default::default()
+            },
+        );
+        let mut evm = TempoEvmFactory::default().create_evm_with_inspector(
+            WrapDatabaseRef(db),
+            tempo_env,
+            inspector,
+        );
+        self.inject_precompiles(evm.precompiles_mut());
+        let result = evm.transact(tx_env)?;
+        Ok(ResultAndState {
+            result: result.result.map_haltreason(|h| match h {
+                TempoHaltReason::Ethereum(eth) => eth,
+                _ => HaltReason::PrecompileError,
+            }),
+            state: result.state,
+        })
+    }
+}
+
 // Methods that are generic over any Network.
 impl<N: Network> Backend<N> {
     /// Sets the account to impersonate
@@ -610,26 +790,6 @@ impl<N: Network> Backend<N> {
             return Ok(());
         }
         Err(BlockchainError::TempoTransactionUnsupported)
-    }
-
-    /// Returns a decoder projected for the executing EVM snapshot.
-    fn call_trace_decoder(&self, evm_env: &EvmEnv) -> Arc<CallTraceDecoder> {
-        Arc::new(self.call_trace_decoder.as_ref().clone().with_network_context(
-            NetworkExecutionContext::new(
-                evm_env.cfg_env.chain_id,
-                evm_env.block_env.timestamp.saturating_to(),
-            ),
-        ))
-    }
-
-    /// Builds the [`InspectorTxConfig`] from the backend's current settings.
-    fn inspector_tx_config(&self, evm_env: &EvmEnv) -> InspectorTxConfig {
-        InspectorTxConfig {
-            print_traces: self.print_traces,
-            print_logs: self.print_logs,
-            enable_steps_tracing: self.enable_steps_tracing,
-            call_trace_decoder: self.call_trace_decoder(evm_env),
-        }
     }
 
     /// Builds the [`PoolTxGasConfig`] from the given EVM environment.
@@ -1125,168 +1285,6 @@ impl<N: Network> Backend<N> {
         }
     }
 
-    /// Injects all configured precompiles into the given precompile map.
-    ///
-    /// This applies three layers:
-    /// 1. Network-specific precompiles (e.g. Tempo, OP)
-    /// 2. User-provided precompiles via [`PrecompileFactory`]
-    /// 3. Cheatcode ecrecover overrides (if active)
-    fn inject_precompiles(&self, precompiles: &mut PrecompilesMap, evm_env: &EvmEnv) {
-        self.network_profile
-            .inject_precompiles(
-                precompiles,
-                NetworkExecutionContext::new(
-                    evm_env.cfg_env.chain_id,
-                    evm_env.block_env.timestamp.saturating_to(),
-                ),
-            )
-            .expect("resolved network profile precompile composition must be compatible");
-
-        if let Some(factory) = &self.precompile_factory {
-            precompiles.extend_precompiles(factory.precompiles());
-        }
-
-        let cheats = Arc::new(self.cheats.clone());
-        if cheats.has_recover_overrides() {
-            let cheat_ecrecover = CheatEcrecover::new(Arc::clone(&cheats));
-            precompiles.apply_precompile(&EC_RECOVER, move |_| {
-                Some(DynPrecompile::new_stateful(
-                    cheat_ecrecover.precompile_id().clone(),
-                    move |input| cheat_ecrecover.call(input),
-                ))
-            });
-        }
-    }
-
-    /// Creates a concrete EVM, injects precompiles, transacts, and returns the result mapped
-    /// to [`HaltReason`] so all call sites share a single halt-reason type.
-    fn transact_with_inspector_ref<'db, I, DB>(
-        &self,
-        db: &'db DB,
-        evm_env: &EvmEnv,
-        inspector: &mut I,
-        tx_env: OpTransaction<TxEnv>,
-    ) -> Result<ResultAndState<HaltReason>, BlockchainError>
-    where
-        DB: DatabaseRef + ?Sized,
-        I: Inspector<EthEvmContext<WrapDatabaseRef<&'db DB>>>
-            + Inspector<OpEvmContext<WrapDatabaseRef<&'db DB>>>
-            + Inspector<TempoContext<WrapDatabaseRef<&'db DB>>>,
-        WrapDatabaseRef<&'db DB>: Database<Error = DatabaseError>,
-    {
-        if self.is_optimism() {
-            let op_env = EvmEnv::new(
-                evm_env.cfg_env.clone().with_spec_and_mainnet_gas_params(OpSpecId::ISTHMUS),
-                evm_env.block_env.clone(),
-            );
-            let mut evm = OpEvmFactory::default().create_evm_with_inspector(
-                WrapDatabaseRef(db),
-                op_env,
-                inspector,
-            );
-            self.inject_precompiles(evm.precompiles_mut(), evm_env);
-            let result = evm.transact(OpTx(tx_env)).map_err(|e| match e {
-                EVMError::Database(db) => EVMError::Database(db),
-                EVMError::Header(h) => EVMError::Header(h),
-                EVMError::Custom(s) => EVMError::Custom(s),
-                EVMError::CustomAny(err) => EVMError::CustomAny(err),
-                EVMError::Transaction(t) => EVMError::Transaction(t),
-            })?;
-            Ok(ResultAndState {
-                result: result.result.map_haltreason(|h| match h {
-                    OpHaltReason::Base(eth) => eth,
-                    _ => HaltReason::PrecompileError,
-                }),
-                state: result.state,
-            })
-        } else if self.is_tempo() {
-            self.transact_tempo_with_inspector_ref(
-                db,
-                evm_env,
-                inspector,
-                TempoTxEnv::from(tx_env.base),
-            )
-        } else {
-            let mut evm = EthEvmFactory::default().create_evm_with_inspector(
-                WrapDatabaseRef(db),
-                evm_env.clone(),
-                inspector,
-            );
-            self.inject_precompiles(evm.precompiles_mut(), evm_env);
-            Ok(evm.transact(tx_env.base)?)
-        }
-    }
-
-    /// Builds the appropriate tx env from a [`FoundryTxEnvelope`], executes via the correct
-    /// EVM backend (Op/Tempo/Eth), and returns both the result and the base [`TxEnv`].
-    fn transact_envelope_with_inspector_ref<'db, I, DB>(
-        &self,
-        db: &'db DB,
-        evm_env: &EvmEnv,
-        inspector: &mut I,
-        tx: &FoundryTxEnvelope,
-        sender: Address,
-    ) -> Result<(ResultAndState<HaltReason>, TxEnv), BlockchainError>
-    where
-        DB: DatabaseRef + ?Sized,
-        I: Inspector<EthEvmContext<WrapDatabaseRef<&'db DB>>>
-            + Inspector<OpEvmContext<WrapDatabaseRef<&'db DB>>>
-            + Inspector<TempoContext<WrapDatabaseRef<&'db DB>>>,
-        WrapDatabaseRef<&'db DB>: Database<Error = DatabaseError>,
-    {
-        if tx.is_tempo() {
-            let tx_env: TempoTxEnv =
-                FromTxWithEncoded::from_encoded_tx(tx, sender, tx.encoded_2718().into());
-            let base = tx_env.inner.clone();
-            let result = self.transact_tempo_with_inspector_ref(db, evm_env, inspector, tx_env)?;
-            Ok((result, base))
-        } else {
-            let tx_env: OpTransaction<TxEnv> =
-                FromTxWithEncoded::from_encoded_tx(tx, sender, tx.encoded_2718().into());
-            let base = tx_env.base.clone();
-            let result = self.transact_with_inspector_ref(db, evm_env, inspector, tx_env)?;
-            Ok((result, base))
-        }
-    }
-
-    /// Creates a Tempo EVM, injects precompiles, and transacts with a native [`TempoTxEnv`].
-    fn transact_tempo_with_inspector_ref<'db, I, DB>(
-        &self,
-        db: &'db DB,
-        evm_env: &EvmEnv,
-        inspector: &mut I,
-        tx_env: TempoTxEnv,
-    ) -> Result<ResultAndState<HaltReason>, BlockchainError>
-    where
-        DB: DatabaseRef + ?Sized,
-        I: Inspector<TempoContext<WrapDatabaseRef<&'db DB>>>,
-        WrapDatabaseRef<&'db DB>: Database<Error = DatabaseError>,
-    {
-        let hardfork = TempoHardfork::from(self.hardfork);
-        let tempo_env = EvmEnv::new(
-            evm_env.cfg_env.clone().with_spec_and_gas_params(hardfork, tempo_gas_params(hardfork)),
-            TempoBlockEnv {
-                inner: evm_env.block_env.clone(),
-                timestamp_millis_part: 0,
-                ..Default::default()
-            },
-        );
-        let mut evm = TempoEvmFactory::default().create_evm_with_inspector(
-            WrapDatabaseRef(db),
-            tempo_env,
-            inspector,
-        );
-        self.inject_precompiles(evm.precompiles_mut(), evm_env);
-        let result = evm.transact(tx_env)?;
-        Ok(ResultAndState {
-            result: result.result.map_haltreason(|h| match h {
-                TempoHaltReason::Ethereum(eth) => eth,
-                _ => HaltReason::PrecompileError,
-            }),
-            state: result.state,
-        })
-    }
-
     /// Creates a concrete EVM + [`AnvilBlockExecutor`], runs pre-execution changes, and
     /// executes pool transactions. Returns the execution results and drops the EVM.
     #[allow(clippy::too_many_arguments, clippy::type_complexity)]
@@ -1298,7 +1296,6 @@ impl<N: Network> Backend<N> {
         spec_id: SpecId,
         pool_transactions: &[Arc<PoolTransaction<FoundryTxEnvelope>>],
         gas_config: &PoolTxGasConfig,
-        inspector_tx_config: &InspectorTxConfig,
         validator: &dyn Fn(
             &PendingTransaction<FoundryTxEnvelope>,
             &AccountInfo,
@@ -1314,17 +1311,19 @@ impl<N: Network> Backend<N> {
             // enough balance to transfer a non-zero value.
             execution_evm_env.cfg_env.disable_balance_check = true;
         }
+        let construction = AnvilEvmConstruction::new(self, &execution_evm_env);
+        let inspector_tx_config = construction.inspector_tx_config();
 
         macro_rules! run {
             ($evm:expr) => {{
-                self.inject_precompiles($evm.precompiles_mut(), &execution_evm_env);
+                construction.inject_precompiles($evm.precompiles_mut());
                 let mut executor = AnvilBlockExecutor::new($evm, parent_hash, spec_id);
                 executor.apply_pre_execution_changes().expect("pre-execution changes failed");
                 let pool_result = execute_pool_transactions(
                     &mut executor,
                     pool_transactions,
                     gas_config,
-                    inspector_tx_config,
+                    &inspector_tx_config,
                     self.cheats(),
                     validator,
                 );
@@ -1518,6 +1517,7 @@ impl<N: Network> Backend<N> {
         });
 
         let (evm_env, tx_env) = self.build_call_env(request, fee_details, block_env);
+        let construction = AnvilEvmConstruction::new(self, &evm_env);
 
         let ResultAndState { result, state } =
             if let Some((fee_token, nonce_key, valid_before, valid_after)) = tempo_overrides {
@@ -1544,16 +1544,16 @@ impl<N: Network> Backend<N> {
                         ..Default::default()
                     }));
                 }
-                self.transact_tempo_with_inspector_ref(state, &evm_env, &mut inspector, tempo_tx)?
+                construction.transact_tempo_with_inspector_ref(state, &mut inspector, tempo_tx)?
             } else {
-                self.transact_with_inspector_ref(state, &evm_env, &mut inspector, tx_env)?
+                construction.transact_with_inspector_ref(state, &mut inspector, tx_env)?
             };
 
         let (exit_reason, gas_used, out, _logs) = unpack_execution_result(result);
         inspector.print_logs();
 
         if self.print_traces {
-            inspector.into_print_traces(self.call_trace_decoder(&evm_env));
+            inspector.into_print_traces(construction.call_trace_decoder());
         }
 
         Ok((exit_reason, out, gas_used as u128, state))
@@ -1570,8 +1570,9 @@ impl<N: Network> Backend<N> {
             AccessListInspector::new(request.access_list.clone().unwrap_or_default());
 
         let (evm_env, tx_env) = self.build_call_env(request, fee_details, block_env);
+        let construction = AnvilEvmConstruction::new(self, &evm_env);
         let ResultAndState { result, state: _ } =
-            self.transact_with_inspector_ref(state, &evm_env, &mut inspector, tx_env)?;
+            construction.transact_with_inspector_ref(state, &mut inspector, tx_env)?;
         let (exit_reason, gas_used, out, _logs) = unpack_execution_result(result);
         let access_list = inspector.access_list();
         Ok((exit_reason, out, gas_used, access_list))
@@ -1802,6 +1803,7 @@ impl<N: Network> Backend<N> {
         // Configure the block environment
         let mut evm_env = self.evm_env.read().clone();
         evm_env.block_env = block_env_from_header(&block.header);
+        let construction = AnvilEvmConstruction::new(self, &evm_env);
 
         // Execute each transaction in the block with tracing
         for tx_envelope in &block.body.transactions {
@@ -1813,10 +1815,9 @@ impl<N: Network> Backend<N> {
             // Prepare transaction environment and execute
             let pending_tx =
                 PendingTransaction::from_maybe_impersonated(tx_envelope.clone()).ok()?;
-            let (result, _) = self
+            let (result, _) = construction
                 .transact_envelope_with_inspector_ref(
                     &cache_db,
-                    &evm_env,
                     &mut inspector,
                     pending_tx.transaction.as_ref(),
                     *pending_tx.sender(),
@@ -2388,21 +2389,22 @@ impl<N: Network> Backend<N> {
         BlockchainError,
     > {
         let evm_env = self.next_evm_env();
+        let construction = AnvilEvmConstruction::new(self, &evm_env);
         let db = self.db.read().await;
         let mut inspector = self.build_inspector();
-        let (ResultAndState { result, state }, _) = self.transact_envelope_with_inspector_ref(
-            &**db,
-            &evm_env,
-            &mut inspector,
-            tx.pending_transaction.transaction.as_ref(),
-            *tx.pending_transaction.sender(),
-        )?;
+        let (ResultAndState { result, state }, _) = construction
+            .transact_envelope_with_inspector_ref(
+                &**db,
+                &mut inspector,
+                tx.pending_transaction.transaction.as_ref(),
+                *tx.pending_transaction.sender(),
+            )?;
         let (exit_reason, gas_used, out, logs) = unpack_execution_result(result);
 
         inspector.print_logs();
 
         if self.print_traces {
-            inspector.print_traces(self.call_trace_decoder(&evm_env));
+            inspector.print_traces(construction.call_trace_decoder());
         }
 
         Ok((exit_reason, out, gas_used, state, logs))
@@ -2657,7 +2659,6 @@ where
 
                 let spec_id = *evm_env.spec_id();
 
-                let inspector_tx_config = self.inspector_tx_config(&evm_env);
                 let gas_config = self.pool_tx_gas_config(&evm_env);
 
                 let (pool_result, block_result) = self.execute_with_block_executor(
@@ -2667,7 +2668,6 @@ where
                     spec_id,
                     &pool_transactions,
                     &gas_config,
-                    &inspector_tx_config,
                     &|pending, account| {
                         self.validate_pool_transaction_for(pending, account, &evm_env)
                     },
@@ -2855,7 +2855,6 @@ where
 
         let spec_id = *evm_env.spec_id();
 
-        let inspector_tx_config = self.inspector_tx_config(&evm_env);
         let gas_config = self.pool_tx_gas_config(&evm_env);
 
         let (pool_result, block_result) = self.execute_with_block_executor(
@@ -2865,7 +2864,6 @@ where
             spec_id,
             &pool_transactions,
             &gas_config,
-            &inspector_tx_config,
             &|pending, account| self.validate_pool_transaction_for(pending, account, &evm_env),
         );
 
@@ -2991,17 +2989,13 @@ where
 
                             let (evm_env, tx_env) =
                                 self.build_call_env(request, fee_details, block);
-                            let ResultAndState { result, state: _ } = self
-                                .transact_with_inspector_ref(
-                                    &cache_db,
-                                    &evm_env,
-                                    &mut inspector,
-                                    tx_env,
-                                )?;
+                            let construction = AnvilEvmConstruction::new(self, &evm_env);
+                            let ResultAndState { result, state: _ } = construction
+                                .transact_with_inspector_ref(&cache_db, &mut inspector, tx_env)?;
 
                             inspector.print_logs();
                             if self.print_traces {
-                                inspector.print_traces(self.call_trace_decoder(&evm_env));
+                                inspector.print_traces(construction.call_trace_decoder());
                             }
 
                             let tracing_inspector = inspector.tracer.expect("tracer disappeared");
@@ -3024,9 +3018,9 @@ where
 
                             let (evm_env, tx_env) =
                                 self.build_call_env(request, fee_details, block);
-                            let result = self.transact_with_inspector_ref(
+                            let construction = AnvilEvmConstruction::new(self, &evm_env);
+                            let result = construction.transact_with_inspector_ref(
                                 &cache_db,
-                                &evm_env,
                                 &mut inspector,
                                 tx_env,
                             )?;
@@ -3058,9 +3052,9 @@ where
 
                         let (evm_env, tx_env) =
                             self.build_call_env(request, fee_details, block.clone());
-                        let result = self.transact_with_inspector_ref(
+                        let construction = AnvilEvmConstruction::new(self, &evm_env);
+                        let result = construction.transact_with_inspector_ref(
                             &cache_db,
-                            &evm_env,
                             &mut inspector,
                             tx_env.clone(),
                         )?;
@@ -3079,8 +3073,9 @@ where
                 .with_tracing_config(TracingInspectorConfig::from_geth_config(&config));
 
             let (evm_env, tx_env) = self.build_call_env(request, fee_details, block);
+            let construction = AnvilEvmConstruction::new(self, &evm_env);
             let ResultAndState { result, state: _ } =
-                self.transact_with_inspector_ref(&cache_db, &evm_env, &mut inspector, tx_env)?;
+                construction.transact_with_inspector_ref(&cache_db, &mut inspector, tx_env)?;
 
             let (exit_reason, gas_used, out, _logs) = unpack_execution_result(result);
 
@@ -3314,7 +3309,6 @@ where
 
             let spec_id = *evm_env.spec_id();
 
-            let inspector_tx_config = self.inspector_tx_config(&evm_env);
             let gas_config = self.pool_tx_gas_config(&evm_env);
 
             self.execute_with_block_executor(
@@ -3324,18 +3318,17 @@ where
                 spec_id,
                 &pool_txs,
                 &gas_config,
-                &inspector_tx_config,
                 &|pending, account| self.validate_pool_transaction_for(pending, account, &evm_env),
             );
 
             // Extract inner CacheDB to match the expected types for the target tx execution
             let cache_db = cache_db.0;
+            let construction = AnvilEvmConstruction::new(self, &evm_env);
 
             let target_tx = block.body.transactions[index].clone();
             let target_tx = PendingTransaction::from_maybe_impersonated(target_tx)?;
-            let (result, base_tx_env) = self.transact_envelope_with_inspector_ref(
+            let (result, base_tx_env) = construction.transact_envelope_with_inspector_ref(
                 &cache_db,
-                &evm_env,
                 &mut inspector,
                 target_tx.transaction.as_ref(),
                 *target_tx.sender(),
@@ -4055,6 +4048,7 @@ impl Backend<FoundryNetwork> {
                         evm_env.cfg_env.disable_base_fee = !validation;
                         evm_env.block_env.basefee = 0;
                     }
+                    let construction = AnvilEvmConstruction::new(self, &evm_env);
 
                     let mut inspector = self.build_inspector();
 
@@ -4063,13 +4057,13 @@ impl Backend<FoundryNetwork> {
                         inspector = inspector.with_transfers();
                     }
                     trace!(target: "backend", env=?evm_env, spec=?evm_env.spec_id(),"simulate evm env");
-                    let ResultAndState { result, state } =
-                        self.transact_with_inspector_ref(&cache_db, &evm_env, &mut inspector, tx_env)?;
+                    let ResultAndState { result, state } = construction
+                        .transact_with_inspector_ref(&cache_db, &mut inspector, tx_env)?;
                     trace!(target: "backend", ?result, ?request, "simulate call");
 
                     inspector.print_logs();
                     if self.print_traces {
-                        inspector.into_print_traces(self.call_trace_decoder(&evm_env));
+                        inspector.into_print_traces(construction.call_trace_decoder());
                     }
 
                     // commit the transaction
@@ -4800,9 +4794,32 @@ pub use foundry_evm::core::evm::IntoInstructionResult;
 #[cfg(test)]
 mod tests {
     use crate::{NodeConfig, spawn};
-    use alloy_primitives::Bytes;
+    #[cfg(feature = "hashkey")]
+    use alloy_primitives::{Bytes, U256};
+    #[cfg(feature = "hashkey")]
     use alloy_rpc_types::anvil::Forking;
-    use foundry_evm_networks::NetworkConfigs;
+    #[cfg(feature = "hashkey")]
+    use foundry_evm_networks::{NetworkConfigs, NetworkExecutionContext};
+
+    #[cfg(feature = "hashkey")]
+    #[tokio::test]
+    async fn anvil_evm_construction_derives_fresh_activation_snapshot() {
+        let (api, _handle) =
+            spawn(NodeConfig::test().with_networks(NetworkConfigs::with_hashkey())).await;
+        let mut evm_env = api.backend.evm_env.read().clone();
+        let chain_id = evm_env.cfg_env.chain_id;
+
+        evm_env.block_env.timestamp = U256::from(99);
+        let before = super::AnvilEvmConstruction::new(api.backend.as_ref(), &evm_env);
+        assert_eq!(before.network_context, NetworkExecutionContext::new(chain_id, 99));
+        assert_eq!(before.call_trace_decoder().network_context, before.network_context);
+        drop(before);
+
+        evm_env.block_env.timestamp = U256::from(100);
+        let active = super::AnvilEvmConstruction::new(api.backend.as_ref(), &evm_env);
+        assert_eq!(active.network_context, NetworkExecutionContext::new(chain_id, 100));
+        assert_eq!(active.call_trace_decoder().network_context, active.network_context);
+    }
 
     #[cfg(feature = "hashkey")]
     #[tokio::test(flavor = "multi_thread")]

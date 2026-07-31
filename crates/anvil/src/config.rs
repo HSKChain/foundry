@@ -1217,12 +1217,10 @@ impl NodeConfig {
             genesis_init: self.genesis.clone(),
         };
 
-        let network_context = NetworkExecutionContext::new(
-            evm_env.cfg_env.chain_id,
-            evm_env.block_env.timestamp.saturating_to(),
-        );
-        let mut decoder_builder =
-            CallTraceDecoderBuilder::new().with_network_profile(network_profile, network_context);
+        // Runtime construction projects the current transaction context onto this profile-aware
+        // decoder template.
+        let mut decoder_builder = CallTraceDecoderBuilder::new()
+            .with_network_profile(network_profile, NetworkExecutionContext::default());
         if self.print_traces {
             // if traces should get printed we configure the decoder with the signatures cache
             if let Ok(identifier) = SignaturesIdentifier::new(false) {
