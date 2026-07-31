@@ -466,8 +466,10 @@ impl ResolvedNetworkProfile {
         None
     }
 
-    #[cfg(all(test, feature = "hashkey"))]
-    const fn with_b20_config(mut self, config: B20Config) -> Self {
+    /// Overrides the resolved B20 config for activation-boundary conformance tests.
+    #[doc(hidden)]
+    #[cfg(all(feature = "hashkey", any(test, feature = "test-utils")))]
+    pub const fn with_b20_config_for_test(mut self, config: B20Config) -> Self {
         self.b20_activation_time = config.activation_time();
         self.b20_activation_admin = config.activation_admin();
         self
@@ -1062,7 +1064,7 @@ mod tests {
     #[test]
     fn hashkey_trace_identity_follows_activation_snapshot() {
         let config = B20Config::new(Some(100), Some(Address::repeat_byte(0x11))).unwrap();
-        let profile = NetworkConfigs::with_hashkey().resolve().with_b20_config(config);
+        let profile = NetworkConfigs::with_hashkey().resolve().with_b20_config_for_test(config);
         let asset = B20Variant::Asset
             .compute_address(Address::repeat_byte(0x22), B256::repeat_byte(0x33))
             .0;

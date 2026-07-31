@@ -64,6 +64,10 @@ test: ## Run all tests.
 	$(MAKE) test-unit && \
 	$(MAKE) test-doc
 
+.PHONY: hashkey-gate
+hashkey-gate: ## Run the complete HashKey B20 release gate.
+	./.github/scripts/hashkey-release-gate.sh all
+
 ##@ Linting
 
 .PHONY: fmt

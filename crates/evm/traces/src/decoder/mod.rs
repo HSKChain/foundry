@@ -971,7 +971,9 @@ fn network_functions(identity: NetworkTraceIdentity) -> &'static HashMap<Selecto
 
 #[cfg(not(feature = "hashkey"))]
 fn network_functions(identity: NetworkTraceIdentity) -> &'static HashMap<Selector, Vec<Function>> {
-    match identity {}
+    let _ = identity;
+    static EMPTY: OnceLock<HashMap<Selector, Vec<Function>>> = OnceLock::new();
+    EMPTY.get_or_init(HashMap::default)
 }
 
 #[cfg(feature = "hashkey")]
@@ -981,7 +983,9 @@ fn network_events(identity: NetworkTraceIdentity) -> &'static BTreeMap<(B256, us
 
 #[cfg(not(feature = "hashkey"))]
 fn network_events(identity: NetworkTraceIdentity) -> &'static BTreeMap<(B256, usize), Vec<Event>> {
-    match identity {}
+    let _ = identity;
+    static EMPTY: OnceLock<BTreeMap<(B256, usize), Vec<Event>>> = OnceLock::new();
+    EMPTY.get_or_init(BTreeMap::default)
 }
 
 #[cfg(feature = "hashkey")]
@@ -991,7 +995,8 @@ fn network_revert_decoder(identity: NetworkTraceIdentity) -> &'static RevertDeco
 
 #[cfg(not(feature = "hashkey"))]
 fn network_revert_decoder(identity: NetworkTraceIdentity) -> &'static RevertDecoder {
-    match identity {}
+    let _ = identity;
+    Default::default()
 }
 
 /// Returns `true` if the given function calldata (including function selector) is ABI-encoded.

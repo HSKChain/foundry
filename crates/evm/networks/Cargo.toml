@@ -16,6 +16,7 @@ workspace = true
 [features]
 default = []
 hashkey = ["dep:hsk-b20-config", "dep:hsk-b20-precompiles"]
+test-utils = []
 
 [dependencies]
 foundry-evm-hardforks.workspace = true
