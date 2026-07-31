@@ -2,10 +2,11 @@
 
 use crate::{
     executors::{Executor, ExecutorBuilder},
-    inspectors::InspectorStackBuilder,
+    inspectors::{CheatsConfig, InspectorStackBuilder},
 };
 use alloy_evm::{Evm, EvmFactory};
 use alloy_primitives::{Address, BlockNumber};
+use foundry_common::{ContractsByArtifact, compile::Analysis};
 use foundry_config::Config;
 use foundry_evm_core::{
     FoundryBlock, FoundryTransaction,
@@ -17,12 +18,14 @@ use foundry_evm_networks::{
     NetworkExecutionContext, PrecompileCompositionError, ResolvedNetworkProfile,
 };
 use foundry_evm_traces::{
-    CallTrace, CallTraceDecoder, CallTraceDecoderBuilder, DecodedCallTrace, TraceMode,
+    CallTrace, CallTraceDecoder, CallTraceDecoderBuilder, DebugTraceIdentifier, DecodedCallTrace,
+    TraceMode, identifier::SignaturesIdentifier,
 };
 use revm::{context::Block, database::EmptyDB};
 use std::{
     marker::PhantomData,
     ops::{Deref, DerefMut},
+    sync::Arc,
 };
 use thiserror::Error;
 
@@ -99,6 +102,7 @@ impl EvmConstruction {
         }
 
         let network_context = execution_context::<FEN>(&evm_env);
+        let is_fork = fork.is_some();
         let backend = Backend::spawn_with_network_profile(fork, network_profile, network_context)
             .map_err(|error| EvmConstructionError::Backend(error.to_string()))?;
         if backend.network_profile() != network_profile {
@@ -115,11 +119,13 @@ impl EvmConstruction {
             fork_block_number,
             network_profile,
             network_context,
+            is_fork,
         })
     }
 }
 
 /// Opaque environment and reusable state prepared for one construction.
+#[derive(Clone, Debug)]
 pub struct PreparedEvm<FEN: FoundryEvmNetwork> {
     backend: Backend<FEN>,
     evm_env: EvmEnvFor<FEN>,
@@ -127,6 +133,7 @@ pub struct PreparedEvm<FEN: FoundryEvmNetwork> {
     fork_block_number: Option<BlockNumber>,
     network_profile: ResolvedNetworkProfile,
     network_context: NetworkExecutionContext,
+    is_fork: bool,
 }
 
 impl<FEN: FoundryEvmNetwork> PreparedEvm<FEN> {
@@ -145,13 +152,33 @@ impl<FEN: FoundryEvmNetwork> PreparedEvm<FEN> {
         self.fork_block_number
     }
 
+    /// Returns the executing chain ID when this preparation uses a remote fork.
+    pub const fn fork_chain_id(&self) -> Option<u64> {
+        if self.is_fork { Some(self.network_context.chain_id) } else { None }
+    }
+
+    /// Validates precompile composition before starting consumer execution.
+    pub fn validate(&self) -> Result<(), EvmConstructionError> {
+        validate_precompile_composition::<FEN>(
+            self.network_profile,
+            self.network_context,
+            &self.evm_env,
+        )?;
+        Ok(())
+    }
+
+    /// Builds a trace decoder bound to this preparation's execution snapshot.
+    pub fn trace_decoder(&self, config: DecoderConfig) -> CallTraceDecoder {
+        build_decoder(self.network_profile, self.network_context, self.fork_chain_id(), config)
+    }
+
     /// Constructs an executor and decoder bound to one environment snapshot.
     pub fn construct(
         self,
         config: ExecutorConfig<FEN>,
     ) -> Result<ConstructedEvm<FEN>, EvmConstructionError> {
+        self.validate()?;
         let Self { backend, evm_env, tx_env, network_profile, network_context, .. } = self;
-        validate_precompile_composition::<FEN>(network_profile, network_context, &evm_env)?;
 
         let ExecutorConfig { inspectors, gas_limit, spec, legacy_assertions, .. } = config;
         let mut builder = ExecutorBuilder::default()
@@ -162,10 +189,12 @@ impl<FEN: FoundryEvmNetwork> PreparedEvm<FEN> {
             builder = builder.gas_limit(gas_limit);
         }
         let executor = builder.build(evm_env, tx_env, backend);
-        let decoder = CallTraceDecoderBuilder::new()
-            .with_chain_id(Some(network_context.chain_id))
-            .with_network_profile(network_profile, network_context)
-            .build();
+        let decoder = build_decoder(
+            network_profile,
+            network_context,
+            Some(network_context.chain_id),
+            DecoderConfig::default(),
+        );
 
         Ok(ConstructedEvm {
             executor,
@@ -200,6 +229,30 @@ impl<FEN: FoundryEvmNetwork> Default for ExecutorConfig<FEN> {
 }
 
 impl<FEN: FoundryEvmNetwork> ExecutorConfig<FEN> {
+    /// Enables log collection and optional live log output.
+    pub fn logs(mut self, live_logs: bool) -> Self {
+        self.inspectors = self.inspectors.logs(live_logs);
+        self
+    }
+
+    /// Enables cheatcodes with the supplied consumer configuration.
+    pub fn cheatcodes(mut self, config: Arc<CheatsConfig>) -> Self {
+        self.inspectors = self.inspectors.cheatcodes(config);
+        self
+    }
+
+    /// Enables or disables line coverage collection.
+    pub fn line_coverage(mut self, enable: bool) -> Self {
+        self.inspectors = self.inspectors.line_coverage(enable);
+        self
+    }
+
+    /// Supplies source analysis used by debugger and cheatcode behavior.
+    pub fn analysis(mut self, analysis: Analysis) -> Self {
+        self.inspectors = self.inspectors.set_analysis(analysis);
+        self
+    }
+
     /// Enables the requested trace collection mode.
     pub fn trace_mode(mut self, trace_mode: TraceMode) -> Self {
         self.inspectors = self.inspectors.trace_mode(trace_mode);
@@ -260,6 +313,54 @@ impl<FEN: FoundryEvmNetwork> ConstructedEvm<FEN> {
     pub async fn decode_function(&self, trace: &CallTrace) -> DecodedCallTrace {
         self.decoder.decode_function(trace).await
     }
+
+    /// Returns the coherent executor projection for consumers that own execution.
+    pub fn into_executor(self) -> Executor<FEN> {
+        self.executor
+    }
+}
+
+/// Consumer-specific trace decoding behavior without network selection fields.
+#[derive(Default)]
+#[must_use = "decoder config does nothing unless passed to `PreparedEvm::trace_decoder`"]
+pub struct DecoderConfig {
+    known_contracts: Option<ContractsByArtifact>,
+    label_disabled: bool,
+    verbosity: u8,
+    signature_identifier: Option<SignaturesIdentifier>,
+    debug_identifier: Option<DebugTraceIdentifier>,
+}
+
+impl DecoderConfig {
+    /// Adds locally compiled contracts and their ABIs.
+    pub fn known_contracts(mut self, contracts: ContractsByArtifact) -> Self {
+        self.known_contracts = Some(contracts);
+        self
+    }
+
+    /// Enables or disables address labels.
+    pub const fn label_disabled(mut self, disabled: bool) -> Self {
+        self.label_disabled = disabled;
+        self
+    }
+
+    /// Sets trace decoding verbosity.
+    pub const fn verbosity(mut self, verbosity: u8) -> Self {
+        self.verbosity = verbosity;
+        self
+    }
+
+    /// Adds external function and event signature identification.
+    pub fn signature_identifier(mut self, identifier: SignaturesIdentifier) -> Self {
+        self.signature_identifier = Some(identifier);
+        self
+    }
+
+    /// Adds internal source-level trace identification.
+    pub fn debug_identifier(mut self, identifier: DebugTraceIdentifier) -> Self {
+        self.debug_identifier = Some(identifier);
+        self
+    }
 }
 
 impl<FEN: FoundryEvmNetwork> Deref for ConstructedEvm<FEN> {
@@ -305,6 +406,36 @@ fn validate_precompile_composition<FEN: FoundryEvmNetwork>(
 ) -> Result<(), PrecompileCompositionError> {
     let mut evm = FEN::EvmFactory::default().create_evm(EmptyDB::default(), evm_env.clone());
     network_profile.inject_precompiles(evm.precompiles_mut(), network_context)
+}
+
+fn build_decoder(
+    network_profile: ResolvedNetworkProfile,
+    network_context: NetworkExecutionContext,
+    chain_id: Option<u64>,
+    config: DecoderConfig,
+) -> CallTraceDecoder {
+    let DecoderConfig {
+        known_contracts,
+        label_disabled,
+        verbosity,
+        signature_identifier,
+        debug_identifier,
+    } = config;
+    let mut builder = CallTraceDecoderBuilder::new()
+        .with_label_disabled(label_disabled)
+        .with_verbosity(verbosity)
+        .with_chain_id(chain_id)
+        .with_network_profile(network_profile, network_context);
+    if let Some(known_contracts) = &known_contracts {
+        builder = builder.with_known_contracts(known_contracts);
+    }
+    if let Some(identifier) = signature_identifier {
+        builder = builder.with_signature_identifier(identifier);
+    }
+    if let Some(identifier) = debug_identifier {
+        builder = builder.with_debug_identifier(identifier);
+    }
+    builder.build()
 }
 
 #[cfg(test)]

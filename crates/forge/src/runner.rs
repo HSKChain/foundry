@@ -32,12 +32,12 @@ use foundry_evm::{
         invariant::{InvariantContract, InvariantSettings},
         strategies::EvmFuzzState,
     },
-    revm::primitives::hardfork::SpecId,
     traces::{TraceKind, TraceMode, load_contracts},
 };
 use itertools::Itertools;
 use proptest::test_runner::{RngAlgorithm, TestError, TestRng, TestRunner};
 use rayon::prelude::*;
+use revm::primitives::hardfork::SpecId;
 use serde::{Deserialize, Serialize};
 use std::{
     borrow::Cow,

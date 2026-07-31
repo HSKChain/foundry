@@ -6,7 +6,7 @@ use crate::{
     multi_runner::matches_artifact,
     result::{SuiteResult, TestOutcome, TestStatus},
     traces::{
-        CallTraceDecoderBuilder, InternalTraceMode, TraceKind,
+        InternalTraceMode, TraceKind,
         debug::{ContractSources, DebugTraceIdentifier},
         decode_trace_arena, folded_stack_trace,
         identifier::SignaturesIdentifier,
@@ -31,7 +31,7 @@ use foundry_compilers::{
     utils::source_files_iter,
 };
 use foundry_config::{
-    Config, figment,
+    Chain, Config, figment,
     figment::{
         Metadata, Profile, Provider,
         value::{Dict, Map},
@@ -40,17 +40,14 @@ use foundry_config::{
 };
 use foundry_debugger::Debugger;
 use foundry_evm::{
-    core::evm::{
-        BlockEnvFor, EthEvmNetwork, FoundryEvmNetwork, OpEvmNetwork, SpecFor, TempoEvmNetwork,
-        TxEnvFor,
-    },
+    construction::{DecoderConfig, EvmConstruction},
+    core::evm::{EthEvmNetwork, FoundryEvmNetwork, OpEvmNetwork, TempoEvmNetwork},
     opts::EvmOpts,
     traces::{backtrace::BacktraceBuilder, identifier::TraceIdentifiers, prune_trace_depth},
 };
-use foundry_evm_networks::{NetworkExecutionContext, ResolvedNetworkProfile};
+use foundry_evm_networks::ResolvedNetworkProfile;
 use rand::Rng;
 use regex::Regex;
-use revm::context::{Block as _, Transaction};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt::Write,
@@ -490,28 +487,17 @@ impl TestArgs {
         decode_internal: InternalTraceMode,
     ) -> eyre::Result<(Libraries, TestOutcome)> {
         let verbosity = evm_opts.verbosity;
-        let (evm_env, tx_env, fork_block) = evm_opts
-            .env_with_network_profile::<SpecFor<FEN>, BlockEnvFor<FEN>, TxEnvFor<FEN>>(
-                network_profile,
-            )
-            .await?;
-
         let config = Arc::new(config);
+        let prepared = EvmConstruction::prepare::<FEN>(&evm_opts, &config, network_profile).await?;
         let runner = MultiContractRunnerBuilder::new(config.clone())
             .set_debug(should_debug)
             .set_decode_internal(decode_internal)
             .initial_balance(evm_opts.initial_balance)
             .sender(evm_opts.sender)
-            .with_fork(evm_opts.get_fork_with_network_profile(
-                &config,
-                evm_env.cfg_env.chain_id,
-                fork_block,
-                network_profile,
-            ))
             .enable_isolation(evm_opts.isolate)
             .fail_fast(self.fail_fast)
             .set_coverage(coverage)
-            .build::<FEN, MultiCompiler>(output, evm_env, tx_env, evm_opts, network_profile)?;
+            .build::<FEN, MultiCompiler>(output, prepared, evm_opts)?;
 
         let libraries = runner.libraries.clone();
         let outcome = self.run_tests_inner(runner, config, verbosity, filter, output).await?;
@@ -615,16 +601,11 @@ impl TestArgs {
             return Ok(TestOutcome::new(Some(kc), results, self.allow_failure, fuzz_seed));
         }
 
-        let remote_chain =
-            if runner.fork.is_some() { runner.tx_env.chain_id().map(Into::into) } else { None };
+        let prepared = runner.tcfg.prepared.clone();
+        let remote_chain = prepared.fork_chain_id().map(Chain::from_id);
         let known_contracts = runner.known_contracts.clone();
 
         let libraries = runner.libraries.clone();
-        let network_profile = runner.tcfg.network_profile;
-        let network_context = NetworkExecutionContext::new(
-            runner.tcfg.evm_env.cfg_env.chain_id,
-            runner.tcfg.evm_env.block_env.timestamp().saturating_to(),
-        );
 
         // Run tests in a streaming fashion.
         let (tx, rx) = channel::<(String, SuiteResult)>();
@@ -646,24 +627,22 @@ impl TestArgs {
         }
 
         // Build the trace decoder.
-        let mut builder = CallTraceDecoderBuilder::new()
-            .with_known_contracts(&known_contracts)
-            .with_label_disabled(self.disable_labels)
-            .with_verbosity(verbosity)
-            .with_chain_id(remote_chain.map(|c| c.id()))
-            .with_network_profile(network_profile, network_context);
+        let mut decoder_config = DecoderConfig::default()
+            .known_contracts(known_contracts.clone())
+            .label_disabled(self.disable_labels)
+            .verbosity(verbosity);
         // Signatures are of no value for gas reports.
         if !self.gas_report {
-            builder =
-                builder.with_signature_identifier(SignaturesIdentifier::from_config(&config)?);
+            decoder_config =
+                decoder_config.signature_identifier(SignaturesIdentifier::from_config(&config)?);
         }
 
         if self.decode_internal {
             let sources =
                 ContractSources::from_project_output(output, &config.root, Some(&libraries))?;
-            builder = builder.with_debug_identifier(DebugTraceIdentifier::new(sources));
+            decoder_config = decoder_config.debug_identifier(DebugTraceIdentifier::new(sources));
         }
-        let mut decoder = builder.build();
+        let mut decoder = prepared.trace_decoder(decoder_config);
 
         let mut gas_report = self.gas_report.then(|| {
             GasReport::new(
@@ -1146,7 +1125,6 @@ fn junit_xml_report(results: &BTreeMap<String, SuiteResult>, verbosity: u8) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
-    use foundry_config::Chain;
     use foundry_evm_networks::NetworkConfigs;
 
     #[test]

@@ -17,21 +17,18 @@ use foundry_compilers::{
 };
 use foundry_config::{Config, InlineConfig};
 use foundry_evm::{
-    backend::Backend,
-    core::evm::{EvmEnvFor, FoundryEvmNetwork, SpecFor, TxEnvFor},
+    construction::{ExecutorConfig, PreparedEvm},
+    core::evm::{FoundryEvmNetwork, SpecFor},
     decode::RevertDecoder,
-    executors::{EarlyExit, Executor, ExecutorBuilder},
-    fork::CreateFork,
+    executors::{EarlyExit, Executor},
     fuzz::strategies::LiteralsDictionary,
     inspectors::CheatsConfig,
     opts::EvmOpts,
     traces::{InternalTraceMode, TraceMode},
 };
-use foundry_evm_networks::{NetworkExecutionContext, ResolvedNetworkProfile};
 
 use foundry_linking::{LinkOutput, Linker};
 use rayon::prelude::*;
-use revm::context::Block;
 use std::{
     borrow::Borrow,
     collections::BTreeMap,
@@ -68,9 +65,6 @@ pub struct MultiContractRunner<FEN: FoundryEvmNetwork> {
     pub analysis: Arc<solar::sema::Compiler>,
     /// Literals dictionary for fuzzing.
     pub fuzz_literals: LiteralsDictionary,
-
-    /// The fork to use at launch
-    pub fork: Option<CreateFork>,
 
     /// The base configuration for the test runner.
     pub tcfg: TestRunnerConfig<FEN>,
@@ -169,8 +163,8 @@ impl<FEN: FoundryEvmNetwork> MultiContractRunner<FEN> {
 
     /// Executes _all_ tests that match the given `filter`.
     ///
-    /// This will create the runtime based on the configured `evm` ops and create the `Backend`
-    /// before executing all contracts and their tests in _parallel_.
+    /// This reuses the prepared EVM snapshot while executing all contracts and their tests in
+    /// _parallel_.
     ///
     /// Each Executor gets its own instance of the `Backend`.
     pub fn test(
@@ -181,17 +175,6 @@ impl<FEN: FoundryEvmNetwork> MultiContractRunner<FEN> {
     ) -> Result<()> {
         let tokio_handle = tokio::runtime::Handle::current();
         trace!("running all tests");
-
-        // The DB backend that serves all the data.
-        let network_context = NetworkExecutionContext::new(
-            self.tcfg.evm_env.cfg_env.chain_id,
-            self.tcfg.evm_env.block_env.timestamp().saturating_to(),
-        );
-        let db = Backend::spawn_with_network_profile(
-            self.fork.take(),
-            self.tcfg.network_profile,
-            network_context,
-        )?;
 
         let find_timer = Instant::now();
         let contracts = self.matching_contracts(filter).collect::<Vec<_>>();
@@ -215,7 +198,6 @@ impl<FEN: FoundryEvmNetwork> MultiContractRunner<FEN> {
                     let result = self.run_test_suite(
                         id,
                         contract,
-                        &db,
                         filter,
                         &tokio_handle,
                         Some(&tests_progress),
@@ -238,7 +220,7 @@ impl<FEN: FoundryEvmNetwork> MultiContractRunner<FEN> {
         } else {
             contracts.par_iter().for_each(|&(id, contract)| {
                 let _guard = tokio_handle.enter();
-                let result = self.run_test_suite(id, contract, &db, filter, &tokio_handle, None);
+                let result = self.run_test_suite(id, contract, filter, &tokio_handle, None);
                 let _ = tx.send((id.identifier(), result));
             })
         }
@@ -250,7 +232,6 @@ impl<FEN: FoundryEvmNetwork> MultiContractRunner<FEN> {
         &self,
         artifact_id: &ArtifactId,
         contract: &TestContract,
-        db: &Backend<FEN>,
         filter: &dyn TestFilter,
         tokio_handle: &tokio::runtime::Handle,
         progress: Option<&TestsProgress>,
@@ -267,12 +248,8 @@ impl<FEN: FoundryEvmNetwork> MultiContractRunner<FEN> {
 
         debug!("start executing all tests in contract");
 
-        let executor = self.tcfg.executor(
-            self.known_contracts.clone(),
-            self.analysis.clone(),
-            artifact_id,
-            db.clone(),
-        );
+        let executor =
+            self.tcfg.executor(self.known_contracts.clone(), self.analysis.clone(), artifact_id);
         let runner = ContractRunner::new(
             &identifier,
             contract,
@@ -302,12 +279,8 @@ pub struct TestRunnerConfig<FEN: FoundryEvmNetwork> {
 
     /// EVM configuration.
     pub evm_opts: EvmOpts,
-    /// Immutable runtime network profile.
-    pub network_profile: ResolvedNetworkProfile,
-    /// EVM environment.
-    pub evm_env: EvmEnvFor<FEN>,
-    /// Transaction environment.
-    pub tx_env: TxEnvFor<FEN>,
+    /// Opaque EVM environment, reusable backend state, and execution snapshot.
+    pub prepared: PreparedEvm<FEN>,
     /// EVM version.
     pub spec_id: SpecFor<FEN>,
     /// The address which will be used to deploy the initial contracts and send all transactions.
@@ -361,7 +334,6 @@ impl<FEN: FoundryEvmNetwork> TestRunnerConfig<FEN> {
         inspector.tracing(self.trace_mode());
         inspector.collect_line_coverage(self.line_coverage);
         inspector.enable_isolation(self.isolation);
-        inspector.network_profile(self.network_profile);
         // inspector.set_create2_deployer(self.evm_opts.create2_deployer);
 
         // executor.env_mut().clone_from(&self.env);
@@ -376,7 +348,6 @@ impl<FEN: FoundryEvmNetwork> TestRunnerConfig<FEN> {
         known_contracts: ContractsByArtifact,
         analysis: Arc<solar::sema::Compiler>,
         artifact_id: &ArtifactId,
-        db: Backend<FEN>,
     ) -> Executor<FEN> {
         let cheats_config = Arc::new(CheatsConfig::new(
             &self.config,
@@ -385,22 +356,23 @@ impl<FEN: FoundryEvmNetwork> TestRunnerConfig<FEN> {
             Some(artifact_id.clone()),
             None,
         ));
-        ExecutorBuilder::default()
-            .inspectors(|stack| {
-                stack
+        self.prepared
+            .clone()
+            .construct(
+                ExecutorConfig::default()
                     .logs(self.config.live_logs)
                     .cheatcodes(cheats_config)
                     .trace_mode(self.trace_mode())
                     .line_coverage(self.line_coverage)
                     .enable_isolation(self.isolation)
-                    .network_profile(self.network_profile)
                     .create2_deployer(self.evm_opts.create2_deployer)
-                    .set_analysis(analysis)
-            })
-            .spec_id(self.spec_id)
-            .gas_limit(self.evm_opts.gas_limit())
-            .legacy_assertions(self.config.legacy_assertions)
-            .build(self.evm_env.clone(), self.tx_env.clone(), db)
+                    .analysis(analysis)
+                    .spec_id(self.spec_id)
+                    .gas_limit(self.evm_opts.gas_limit())
+                    .legacy_assertions(self.config.legacy_assertions),
+            )
+            .expect("prepared EVM construction was validated")
+            .into_executor()
     }
 
     fn trace_mode(&self) -> TraceMode {
@@ -420,8 +392,6 @@ pub struct MultiContractRunnerBuilder {
     pub sender: Option<Address>,
     /// The initial balance for each one of the deployed smart contracts
     pub initial_balance: U256,
-    /// The fork to use at launch
-    pub fork: Option<CreateFork>,
     /// Project config.
     pub config: Arc<Config>,
     /// Whether or not to collect line coverage info
@@ -442,7 +412,6 @@ impl MultiContractRunnerBuilder {
             config,
             sender: Default::default(),
             initial_balance: Default::default(),
-            fork: Default::default(),
             line_coverage: Default::default(),
             debug: Default::default(),
             isolation: Default::default(),
@@ -458,11 +427,6 @@ impl MultiContractRunnerBuilder {
 
     pub const fn initial_balance(mut self, initial_balance: U256) -> Self {
         self.initial_balance = initial_balance;
-        self
-    }
-
-    pub fn with_fork(mut self, fork: Option<CreateFork>) -> Self {
-        self.fork = fork;
         self
     }
 
@@ -496,11 +460,10 @@ impl MultiContractRunnerBuilder {
     pub fn build<FEN: FoundryEvmNetwork, C: Compiler<CompilerContract = Contract>>(
         self,
         output: &ProjectCompileOutput,
-        evm_env: EvmEnvFor<FEN>,
-        tx_env: TxEnvFor<FEN>,
+        prepared: PreparedEvm<FEN>,
         evm_opts: EvmOpts,
-        network_profile: ResolvedNetworkProfile,
     ) -> Result<MultiContractRunner<FEN>> {
+        prepared.validate()?;
         let root = &self.config.root;
         let contracts = output
             .artifact_ids()
@@ -596,9 +559,7 @@ impl MultiContractRunnerBuilder {
 
             tcfg: TestRunnerConfig {
                 evm_opts,
-                network_profile,
-                evm_env,
-                tx_env,
+                prepared,
                 spec_id: self.config.evm_spec_id(),
                 sender: self.sender.unwrap_or(self.config.sender),
                 line_coverage: self.line_coverage,
@@ -609,8 +570,6 @@ impl MultiContractRunnerBuilder {
                 early_exit: EarlyExit::new(self.fail_fast),
                 config: self.config,
             },
-
-            fork: self.fork,
         })
     }
 }
