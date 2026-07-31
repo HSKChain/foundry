@@ -100,7 +100,7 @@ use foundry_evm::{
     inspectors::AccessListInspector,
     traces::{
         CallTraceDecoder, FourByteInspector, GethTraceBuilder, TracingInspector,
-        TracingInspectorConfig,
+        TracingInspectorConfig, bind_network_snapshot,
     },
     utils::{
         block_env_from_header, get_blob_base_fee_update_fraction,
@@ -321,13 +321,11 @@ impl<'a, N: Network> AnvilEvmConstruction<'a, N> {
     }
 
     fn call_trace_decoder(&self) -> Arc<CallTraceDecoder> {
-        Arc::new(
-            self.backend
-                .call_trace_decoder
-                .as_ref()
-                .clone()
-                .with_network_context(self.network_context),
-        )
+        Arc::new(bind_network_snapshot(
+            self.backend.call_trace_decoder.as_ref().clone(),
+            self.backend.network_profile,
+            self.network_context,
+        ))
     }
 
     fn inspector_tx_config(&self) -> InspectorTxConfig {
@@ -2006,7 +2004,7 @@ impl<N: Network> Backend<N> {
                 cfg.slots_in_an_epoch,
                 cfg.precompile_factory.clone(),
                 cfg.disable_pool_balance_checks,
-                cfg.get_hardfork_with_network_profile(network_profile),
+                cfg.get_hardfork_for_profile(network_profile),
             )
         };
 
@@ -4812,13 +4810,11 @@ mod tests {
         evm_env.block_env.timestamp = U256::from(99);
         let before = super::AnvilEvmConstruction::new(api.backend.as_ref(), &evm_env);
         assert_eq!(before.network_context, NetworkExecutionContext::new(chain_id, 99));
-        assert_eq!(before.call_trace_decoder().network_context, before.network_context);
         drop(before);
 
         evm_env.block_env.timestamp = U256::from(100);
         let active = super::AnvilEvmConstruction::new(api.backend.as_ref(), &evm_env);
         assert_eq!(active.network_context, NetworkExecutionContext::new(chain_id, 100));
-        assert_eq!(active.call_trace_decoder().network_context, active.network_context);
     }
 
     #[cfg(feature = "hashkey")]

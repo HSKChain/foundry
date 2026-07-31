@@ -501,6 +501,20 @@ impl<FEN: FoundryEvmNetwork> Debug for Backend<FEN> {
     }
 }
 
+/// Internal backend entry point used by the workspace EVM construction module.
+#[doc(hidden)]
+pub mod construction {
+    use super::*;
+
+    /// Creates a backend from one resolved profile and optional initial fork.
+    pub fn spawn<FEN: FoundryEvmNetwork>(
+        fork: Option<CreateFork>,
+        network_profile: ResolvedNetworkProfile,
+    ) -> eyre::Result<Backend<FEN>> {
+        Backend::spawn_for_profile(fork, network_profile)
+    }
+}
+
 impl<FEN: FoundryEvmNetwork> Backend<FEN> {
     /// Creates a new Backend with a spawned multi fork thread.
     ///
@@ -508,28 +522,24 @@ impl<FEN: FoundryEvmNetwork> Backend<FEN> {
     /// database.
     pub fn spawn(fork: Option<CreateFork>) -> eyre::Result<Self> {
         let network_profile = fork.as_ref().map(|fork| fork.network_profile).unwrap_or_default();
-        Self::new_with_network_profile(
+        Self::new_with_profile(
             MultiFork::<AnyNetwork, SpecFor<FEN>, BlockEnvFor<FEN>>::spawn(),
             fork,
             network_profile,
-            NetworkExecutionContext::default(),
         )
     }
 
-    /// Creates a backend carrying an already resolved profile and execution context.
-    pub fn spawn_with_network_profile(
+    fn spawn_for_profile(
         mut fork: Option<CreateFork>,
         network_profile: ResolvedNetworkProfile,
-        network_context: NetworkExecutionContext,
     ) -> eyre::Result<Self> {
         if let Some(fork) = &mut fork {
             fork.network_profile = network_profile;
         }
-        Self::new_with_network_profile(
+        Self::new_with_profile(
             MultiFork::<AnyNetwork, SpecFor<FEN>, BlockEnvFor<FEN>>::spawn(),
             fork,
             network_profile,
-            network_context,
         )
     }
 
@@ -544,20 +554,13 @@ impl<FEN: FoundryEvmNetwork> Backend<FEN> {
         fork: Option<CreateFork>,
     ) -> eyre::Result<Self> {
         let network_profile = fork.as_ref().map(|fork| fork.network_profile).unwrap_or_default();
-        Self::new_with_network_profile(
-            forks,
-            fork,
-            network_profile,
-            NetworkExecutionContext::default(),
-        )
+        Self::new_with_profile(forks, fork, network_profile)
     }
 
-    /// Creates a backend carrying an already resolved profile and execution context.
-    pub fn new_with_network_profile(
+    fn new_with_profile(
         forks: MultiFork<AnyNetwork, SpecFor<FEN>, BlockEnvFor<FEN>>,
         mut fork: Option<CreateFork>,
         network_profile: ResolvedNetworkProfile,
-        _network_context: NetworkExecutionContext,
     ) -> eyre::Result<Self> {
         if let Some(fork) = &mut fork {
             fork.network_profile = network_profile;
@@ -655,11 +658,6 @@ impl<FEN: FoundryEvmNetwork> Backend<FEN> {
 
     /// Creates a new instance with a `BackendDatabase::InMemory` cache layer for the `CacheDB`
     pub fn clone_empty(&self) -> Self {
-        self.clone_empty_with_context(NetworkExecutionContext::default())
-    }
-
-    /// Creates an empty backend clone for the provided execution context.
-    pub fn clone_empty_with_context(&self, _network_context: NetworkExecutionContext) -> Self {
         let inner = BackendInner {
             persistent_accounts: HashSet::from(DEFAULT_PERSISTENT_ACCOUNTS),
             spec_id: self.inner.spec_id,
@@ -2321,7 +2319,7 @@ mod tests {
     use foundry_common::provider::get_http_provider;
     use foundry_config::{Config, NamedChain};
     #[cfg(feature = "hashkey")]
-    use foundry_evm_networks::{NetworkConfigs, NetworkExecutionContext};
+    use foundry_evm_networks::NetworkConfigs;
     use foundry_fork_db::cache::{BlockchainDb, BlockchainDbMeta};
     use revm::{
         context::{BlockEnv, TxEnv},
@@ -2333,9 +2331,7 @@ mod tests {
     #[test]
     fn backend_reuses_profile_and_state_without_an_activation_snapshot() {
         let profile = NetworkConfigs::with_hashkey().resolve();
-        let context = NetworkExecutionContext::new(31337, 0);
-        let mut backend =
-            Backend::<EthEvmNetwork>::spawn_with_network_profile(None, profile, context).unwrap();
+        let mut backend = super::construction::spawn::<EthEvmNetwork>(None, profile).unwrap();
         let b20_factory = address!("B20F000000000000000000000000000000000000");
         let alloc = profile.b20_genesis_alloc().unwrap();
 

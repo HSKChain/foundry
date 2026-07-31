@@ -261,7 +261,7 @@ impl ScriptArgs {
         Ok((config, evm_opts))
     }
 
-    async fn preprocess_with_network_profile<FEN: FoundryEvmNetwork>(
+    async fn preprocess_for_profile<FEN: FoundryEvmNetwork>(
         self,
         config: Config,
         mut evm_opts: EvmOpts,
@@ -343,8 +343,7 @@ impl ScriptArgs {
         evm_opts: EvmOpts,
         network_profile: ResolvedNetworkProfile,
     ) -> Result<Option<BundledState<FEN>>> {
-        let state =
-            self.preprocess_with_network_profile::<FEN>(config, evm_opts, network_profile).await?;
+        let state = self.preprocess_for_profile::<FEN>(config, evm_opts, network_profile).await?;
         let create2_deployer = state.script_config.evm_opts.create2_deployer;
         let compiled = state.compile()?;
 

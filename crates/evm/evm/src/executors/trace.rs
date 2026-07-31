@@ -130,21 +130,15 @@ impl<FEN: FoundryEvmNetwork> DerefMut for TracingExecutor<FEN> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "hashkey"))]
 mod tests {
     use super::*;
-    #[cfg(feature = "hashkey")]
     use alloy_primitives::address;
-    #[cfg(feature = "hashkey")]
     use foundry_config::GasLimit;
-    #[cfg(feature = "hashkey")]
     use foundry_evm_core::evm::OpEvmNetwork;
-    #[cfg(feature = "hashkey")]
     use foundry_evm_networks::NetworkConfigs;
-    #[cfg(feature = "hashkey")]
     use foundry_evm_traces::CallTrace;
 
-    #[cfg(feature = "hashkey")]
     #[tokio::test(flavor = "multi_thread")]
     async fn tracing_executor_uses_prepared_decoder_snapshot() {
         let mut evm_opts = EvmOpts::default();

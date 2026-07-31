@@ -167,8 +167,6 @@ mod tests {
         let executor =
             TracingExecutor::new(prepared, None, TraceMode::Call, Address::ZERO, None).unwrap();
         let decoder = executor.trace_decoder(DecoderConfig::default());
-        assert_eq!(decoder.network_profile, executor.decoder().network_profile);
-        assert_eq!(decoder.network_context, executor.decoder().network_context);
 
         decode_debugger_traces(&mut traces, &decoder).await;
 

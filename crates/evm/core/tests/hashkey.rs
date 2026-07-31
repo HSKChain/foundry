@@ -6,12 +6,10 @@ use alloy_primitives::{Address, B256, Bytes, TxKind, U256, address, b256, keccak
 use alloy_sol_types::{SolCall, SolError, SolValue};
 use foundry_evm_core::{
     FoundryBlock, FoundryContextExt, InspectorExt,
-    backend::Backend,
+    backend::{Backend, construction as backend_construction},
     evm::{FoundryEvmFactory, OpEvmNetwork},
 };
-use foundry_evm_networks::{
-    HSK_B20_LOCAL_ADMIN, NetworkConfigs, NetworkExecutionContext, ResolvedNetworkProfile,
-};
+use foundry_evm_networks::{HSK_B20_LOCAL_ADMIN, NetworkConfigs, ResolvedNetworkProfile};
 use hsk_b20_precompiles::{
     ActivationFeature, B20Variant, IActivationRegistry, IB20, IB20Factory, IB20Stablecoin,
     IPolicyRegistry,
@@ -110,12 +108,7 @@ impl<CTX> Inspector<CTX> for RecordingProfileInspector {
 }
 
 fn backend(profile: ResolvedNetworkProfile) -> Backend<OpEvmNetwork> {
-    let mut backend = Backend::spawn_with_network_profile(
-        None,
-        profile,
-        NetworkExecutionContext::new(CHAIN_ID, 0),
-    )
-    .unwrap();
+    let mut backend = backend_construction::spawn(None, profile).unwrap();
     backend.insert_account_info(CALLER, AccountInfo { balance: U256::MAX, ..Default::default() });
     backend
 }

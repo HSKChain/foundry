@@ -45,6 +45,8 @@ pub mod identifier;
 use identifier::LocalTraceIdentifier;
 
 mod decoder;
+#[doc(hidden)]
+pub use decoder::bind_network_snapshot;
 pub use decoder::{CallTraceDecoder, CallTraceDecoderBuilder};
 
 pub mod debug;

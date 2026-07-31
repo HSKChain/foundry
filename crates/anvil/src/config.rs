@@ -72,7 +72,7 @@ use foundry_evm::{
     traces::{CallTraceDecoderBuilder, identifier::SignaturesIdentifier},
     utils::get_blob_params,
 };
-use foundry_evm_networks::{NetworkConfigs, NetworkExecutionContext, ResolvedNetworkProfile};
+use foundry_evm_networks::{NetworkConfigs, ResolvedNetworkProfile};
 
 /// Default port the rpc will open
 pub const NODE_PORT: u16 = 8545;
@@ -532,13 +532,13 @@ impl NodeConfig {
     ///
     /// In Tempo mode, uses the hardfork-specific base fee (10 gwei pre-T1, 20 gwei T1+).
     pub fn get_base_fee(&self) -> u64 {
-        self.get_base_fee_with_network_profile(self.networks.resolve())
+        self.get_base_fee_for_profile(self.networks.resolve())
     }
 
-    fn get_base_fee_with_network_profile(&self, network_profile: ResolvedNetworkProfile) -> u64 {
+    fn get_base_fee_for_profile(&self, network_profile: ResolvedNetworkProfile) -> u64 {
         let default = if network_profile.is_tempo() {
             tempo_default_base_fee(TempoHardfork::from(
-                self.get_hardfork_with_network_profile(network_profile),
+                self.get_hardfork_for_profile(network_profile),
             ))
         } else {
             INITIAL_BASE_FEE
@@ -552,13 +552,13 @@ impl NodeConfig {
     ///
     /// In Tempo mode, defaults to the hardfork-specific base fee.
     pub fn get_gas_price(&self) -> u128 {
-        self.get_gas_price_with_network_profile(self.networks.resolve())
+        self.get_gas_price_for_profile(self.networks.resolve())
     }
 
-    fn get_gas_price_with_network_profile(&self, network_profile: ResolvedNetworkProfile) -> u128 {
+    fn get_gas_price_for_profile(&self, network_profile: ResolvedNetworkProfile) -> u128 {
         let default = if network_profile.is_tempo() {
             tempo_default_base_fee(TempoHardfork::from(
-                self.get_hardfork_with_network_profile(network_profile),
+                self.get_hardfork_for_profile(network_profile),
             )) as u128
         } else {
             INITIAL_GAS_PRICE
@@ -589,10 +589,10 @@ impl NodeConfig {
 
     /// Returns the hardfork to use
     pub fn get_hardfork(&self) -> FoundryHardfork {
-        self.get_hardfork_with_network_profile(self.networks.resolve())
+        self.get_hardfork_for_profile(self.networks.resolve())
     }
 
-    pub(crate) fn get_hardfork_with_network_profile(
+    pub(crate) fn get_hardfork_for_profile(
         &self,
         network_profile: ResolvedNetworkProfile,
     ) -> FoundryHardfork {
@@ -1144,7 +1144,7 @@ impl NodeConfig {
         let network_profile = self.networks.resolve();
 
         let mut cfg = CfgEnv::default();
-        cfg.spec = self.get_hardfork_with_network_profile(network_profile).into();
+        cfg.spec = self.get_hardfork_for_profile(network_profile).into();
 
         cfg.chain_id = self.get_chain_id();
         cfg.limit_contract_code_size = self.code_size_limit;
@@ -1167,7 +1167,7 @@ impl NodeConfig {
             cfg,
             BlockEnv {
                 gas_limit: self.gas_limit(),
-                basefee: self.get_base_fee_with_network_profile(network_profile),
+                basefee: self.get_base_fee_for_profile(network_profile),
                 ..Default::default()
             },
         );
@@ -1177,9 +1177,9 @@ impl NodeConfig {
 
         let fees = FeeManager::new(
             spec_id,
-            self.get_base_fee_with_network_profile(network_profile),
+            self.get_base_fee_for_profile(network_profile),
             !self.disable_min_priority_fee,
-            self.get_gas_price_with_network_profile(network_profile),
+            self.get_gas_price_for_profile(network_profile),
             self.get_blob_excess_gas_and_price(),
             self.get_blob_params(),
             base_fee_params,
@@ -1217,10 +1217,9 @@ impl NodeConfig {
             genesis_init: self.genesis.clone(),
         };
 
-        // Runtime construction projects the current transaction context onto this profile-aware
-        // decoder template.
-        let mut decoder_builder = CallTraceDecoderBuilder::new()
-            .with_network_profile(network_profile, NetworkExecutionContext::default());
+        // Runtime construction binds the current profile and transaction context to this decoder
+        // template.
+        let mut decoder_builder = CallTraceDecoderBuilder::new();
         if self.print_traces {
             // if traces should get printed we configure the decoder with the signatures cache
             if let Ok(identifier) = SignaturesIdentifier::new(false) {

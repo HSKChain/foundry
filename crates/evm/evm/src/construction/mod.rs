@@ -11,16 +11,16 @@ use foundry_common::{ContractsByArtifact, compile::Analysis};
 use foundry_config::Config;
 use foundry_evm_core::{
     FoundryBlock, FoundryTransaction,
-    backend::{Backend, DatabaseExt},
+    backend::{Backend, DatabaseExt, construction as backend_construction},
     evm::{BlockEnvFor, EvmEnvFor, FoundryEvmNetwork, SpecFor, TxEnvFor},
-    opts::EvmOpts,
+    opts::{EvmOpts, construction as opts_construction},
 };
 use foundry_evm_networks::{
     NetworkExecutionContext, PrecompileCompositionError, ResolvedNetworkProfile,
 };
 use foundry_evm_traces::{
     CallTrace, CallTraceDecoder, CallTraceDecoderBuilder, DebugTraceIdentifier, DecodedCallTrace,
-    TraceMode, identifier::SignaturesIdentifier,
+    TraceMode, bind_network_snapshot, identifier::SignaturesIdentifier,
 };
 use revm::{context::Block, database::EmptyDB};
 use std::{
@@ -81,18 +81,15 @@ impl EvmConstruction {
         TxEnvFor<FEN>: FoundryTransaction + Default,
     {
         validate_family::<FEN>(network_profile)?;
-        let (evm_env, tx_env, fork_block_number) = evm_opts
-            .env_with_network_profile::<SpecFor<FEN>, BlockEnvFor<FEN>, TxEnvFor<FEN>>(
-                network_profile,
-            )
-            .await
-            .map_err(|error| EvmConstructionError::Environment(error.to_string()))?;
-        let fork = evm_opts.get_fork_with_network_profile(
-            config,
-            evm_env.cfg_env.chain_id,
-            fork_block_number,
+        let prepared = opts_construction::prepare::<SpecFor<FEN>, BlockEnvFor<FEN>, TxEnvFor<FEN>>(
+            evm_opts,
+            Some(config),
             network_profile,
-        );
+        )
+        .await
+        .map_err(|error| EvmConstructionError::Environment(error.to_string()))?;
+        let opts_construction::PreparedEvmOpts { evm_env, tx_env, fork_block_number, fork } =
+            prepared;
         if let Some(fork) = &fork
             && fork.network_profile != network_profile
         {
@@ -104,7 +101,7 @@ impl EvmConstruction {
 
         let network_context = execution_context::<FEN>(&evm_env);
         let is_fork = fork.is_some();
-        let backend = Backend::spawn_with_network_profile(fork, network_profile, network_context)
+        let backend = backend_construction::spawn(fork, network_profile)
             .map_err(|error| EvmConstructionError::Backend(error.to_string()))?;
         if backend.network_profile() != network_profile {
             return Err(EvmConstructionError::ForkProfileMismatch {
@@ -135,12 +132,15 @@ impl EvmConstruction {
         TxEnvFor<FEN>: FoundryTransaction + Default,
     {
         validate_family::<FEN>(state.network_profile)?;
-        let (evm_env, tx_env, fork_block_number) = evm_opts
-            .env_with_network_profile::<SpecFor<FEN>, BlockEnvFor<FEN>, TxEnvFor<FEN>>(
-                state.network_profile,
-            )
-            .await
-            .map_err(|error| EvmConstructionError::Environment(error.to_string()))?;
+        let prepared = opts_construction::prepare::<SpecFor<FEN>, BlockEnvFor<FEN>, TxEnvFor<FEN>>(
+            evm_opts,
+            None,
+            state.network_profile,
+        )
+        .await
+        .map_err(|error| EvmConstructionError::Environment(error.to_string()))?;
+        let opts_construction::PreparedEvmOpts { evm_env, tx_env, fork_block_number, .. } =
+            prepared;
         if state.backend.network_profile() != state.network_profile {
             return Err(EvmConstructionError::ForkProfileMismatch {
                 fork: state.backend.network_profile().name(),
@@ -204,12 +204,15 @@ impl<FEN: FoundryEvmNetwork> PreparedEvm<FEN> {
         BlockEnvFor<FEN>: FoundryBlock + Default,
         TxEnvFor<FEN>: FoundryTransaction + Default,
     {
-        let (evm_env, tx_env, fork_block_number) = evm_opts
-            .env_with_network_profile::<SpecFor<FEN>, BlockEnvFor<FEN>, TxEnvFor<FEN>>(
-                self.network_profile,
-            )
-            .await
-            .map_err(|error| EvmConstructionError::Environment(error.to_string()))?;
+        let prepared = opts_construction::prepare::<SpecFor<FEN>, BlockEnvFor<FEN>, TxEnvFor<FEN>>(
+            evm_opts,
+            None,
+            self.network_profile,
+        )
+        .await
+        .map_err(|error| EvmConstructionError::Environment(error.to_string()))?;
+        let opts_construction::PreparedEvmOpts { evm_env, tx_env, fork_block_number, .. } =
+            prepared;
         let network_context = execution_context::<FEN>(&evm_env);
 
         Ok(Self {
@@ -469,9 +472,9 @@ impl<FEN: FoundryEvmNetwork> ConstructedEvm<FEN> {
     /// Builds a consumer decoder bound to this construction snapshot.
     pub fn trace_decoder(&self, config: DecoderConfig) -> CallTraceDecoder {
         build_decoder(
-            self.decoder.network_profile,
-            self.decoder.network_context,
-            self.decoder.chain_id,
+            self.network_profile,
+            NetworkExecutionContext::new(self.chain_id, self.timestamp),
+            Some(self.chain_id),
             config,
         )
     }
@@ -595,8 +598,7 @@ fn build_decoder(
         .with_labels(labels)
         .with_label_disabled(label_disabled)
         .with_verbosity(verbosity)
-        .with_chain_id(chain_id)
-        .with_network_profile(network_profile, network_context);
+        .with_chain_id(chain_id);
     if let Some(known_contracts) = &known_contracts {
         builder = builder.with_known_contracts(known_contracts);
     }
@@ -606,7 +608,7 @@ fn build_decoder(
     if let Some(identifier) = debug_identifier {
         builder = builder.with_debug_identifier(identifier);
     }
-    builder.build()
+    bind_network_snapshot(builder.build(), network_profile, network_context)
 }
 
 #[cfg(test)]

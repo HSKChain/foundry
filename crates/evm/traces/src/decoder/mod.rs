@@ -113,18 +113,6 @@ impl CallTraceDecoderBuilder {
         self
     }
 
-    /// Sets the resolved network semantics and activation snapshot used for trace decoding.
-    #[inline]
-    pub const fn with_network_profile(
-        mut self,
-        profile: ResolvedNetworkProfile,
-        context: NetworkExecutionContext,
-    ) -> Self {
-        self.decoder.network_profile = profile;
-        self.decoder.network_context = context;
-        self
-    }
-
     /// Sets the debug identifier for the decoder.
     #[inline]
     pub fn with_debug_identifier(mut self, identifier: DebugTraceIdentifier) -> Self {
@@ -187,10 +175,22 @@ pub struct CallTraceDecoder {
     pub chain_id: Option<u64>,
 
     /// Resolved profile used for network-owned trace identities.
-    pub network_profile: ResolvedNetworkProfile,
+    network_profile: ResolvedNetworkProfile,
 
     /// Activation snapshot used for network-owned trace identities.
-    pub network_context: NetworkExecutionContext,
+    network_context: NetworkExecutionContext,
+}
+
+/// Binds a decoder template to one construction-owned network snapshot.
+#[doc(hidden)]
+pub const fn bind_network_snapshot(
+    mut decoder: CallTraceDecoder,
+    network_profile: ResolvedNetworkProfile,
+    network_context: NetworkExecutionContext,
+) -> CallTraceDecoder {
+    decoder.network_profile = network_profile;
+    decoder.network_context = network_context;
+    decoder
 }
 
 impl CallTraceDecoder {
@@ -290,13 +290,6 @@ impl CallTraceDecoder {
 
             network_context: NetworkExecutionContext::default(),
         }
-    }
-
-    /// Updates the activation snapshot used by network-owned trace identities.
-    #[inline]
-    pub const fn with_network_context(mut self, context: NetworkExecutionContext) -> Self {
-        self.network_context = context;
-        self
     }
 
     /// Clears all known addresses.
@@ -1067,12 +1060,11 @@ mod tests {
 
     #[cfg(feature = "hashkey")]
     fn hashkey_decoder() -> CallTraceDecoder {
-        CallTraceDecoderBuilder::new()
-            .with_network_profile(
-                NetworkConfigs::with_hashkey().resolve(),
-                NetworkExecutionContext::new(177, 0),
-            )
-            .build()
+        bind_network_snapshot(
+            CallTraceDecoderBuilder::new().build(),
+            NetworkConfigs::with_hashkey().resolve(),
+            NetworkExecutionContext::new(177, 0),
+        )
     }
 
     #[cfg(feature = "hashkey")]
@@ -1147,23 +1139,22 @@ mod tests {
         assert!(wrong_address.name.is_none());
         assert!(wrong_address.params.is_none());
 
-        let inactive = CallTraceDecoderBuilder::new()
-            .with_network_profile(
-                NetworkConfigs::default().resolve(),
-                NetworkExecutionContext::new(1, 0),
-            )
-            .build()
-            .decode_function(&CallTrace {
-                address: asset,
-                data: Function::parse("multiplier() view returns (uint256)")
-                    .unwrap()
-                    .abi_encode_input(&[])
-                    .unwrap()
-                    .into(),
-                success: true,
-                ..Default::default()
-            })
-            .await;
+        let inactive = bind_network_snapshot(
+            CallTraceDecoderBuilder::new().build(),
+            NetworkConfigs::default().resolve(),
+            NetworkExecutionContext::new(1, 0),
+        )
+        .decode_function(&CallTrace {
+            address: asset,
+            data: Function::parse("multiplier() view returns (uint256)")
+                .unwrap()
+                .abi_encode_input(&[])
+                .unwrap()
+                .into(),
+            success: true,
+            ..Default::default()
+        })
+        .await;
         assert!(inactive.label.is_none());
         assert!(inactive.call_data.is_none());
     }
