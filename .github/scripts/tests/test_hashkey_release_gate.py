@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import importlib.util
+import json
 import subprocess
 import sys
 import tempfile
@@ -161,6 +162,63 @@ tempo-revm = {{ path = "../tempo-spike/crates/revm" }}
         self.assertTrue(
             any("forge must be version 1.7.1" in error for error in gate.validate_metadata(metadata))
         )
+
+    def test_release_metadata_records_exact_compatibility_revisions(self):
+        commit = "1" * 40
+
+        metadata = gate.build_release_metadata("v1.7.1-hsk-b20", commit)
+
+        self.assertEqual(metadata["release"]["foundry_commit"], commit)
+        self.assertEqual(metadata["release"]["binaries"], ["forge", "cast", "anvil", "chisel"])
+        self.assertEqual(metadata["b20"]["semantic_revision"], gate.APPROVED_REVISION)
+        self.assertEqual(metadata["b20"]["binding_revision"], gate.APPROVED_REVISION)
+        self.assertEqual(
+            metadata["compatibility"]["tempo"]["revision"], gate.TEMPO_REVISION
+        )
+        self.assertEqual(metadata["compatibility"]["reth"]["revision"], gate.RETH_REVISION)
+        self.assertEqual(
+            metadata["compatibility"]["op_revm"]["revision"], gate.OP_REVM_REVISION
+        )
+        self.assertEqual(
+            metadata["compatibility"]["op_alloy"]["revision"], gate.OP_ALLOY_REVISION
+        )
+        self.assertIn("hashkey", metadata["build"]["features"])
+        self.assertFalse(metadata["profile"]["production_fidelity"])
+
+    def test_release_metadata_rejects_non_hsk_tag(self):
+        with self.assertRaisesRegex(ValueError, "HSK release tag"):
+            gate.build_release_metadata("v1.7.1", "1" * 40)
+
+    def test_repository_release_contract_passes(self):
+        root = SCRIPT.parents[2]
+
+        self.assertEqual(gate.validate_release_identity(root), [])
+        self.assertEqual(gate.validate_release_files(root), [])
+
+    def test_cli_writes_release_metadata_without_running_cargo_metadata(self):
+        root = SCRIPT.parents[2]
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "hashkey-release-metadata.json"
+
+            subprocess.run(
+                [
+                    sys.executable,
+                    SCRIPT,
+                    "--root",
+                    root,
+                    "--write-release-metadata",
+                    output,
+                    "--tag",
+                    "v1.7.1-hsk-b20",
+                    "--commit",
+                    "2" * 40,
+                ],
+                check=True,
+            )
+
+            metadata = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(metadata["release"]["tag"], "v1.7.1-hsk-b20")
+            self.assertEqual(metadata["release"]["foundry_commit"], "2" * 40)
 
     @staticmethod
     def metadata(*packages, workspace_package=None):

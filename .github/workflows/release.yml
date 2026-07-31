@@ -16,11 +16,36 @@ env:
 
   # Keep in sync with `docker-publish.yml`.
   RUST_PROFILE: dist
-  RUST_FEATURES: aws-kms,gcp-kms,turnkey,cli,asm-keccak,js-tracer
+  RUST_FEATURES: aws-kms,gcp-kms,turnkey,cli,asm-keccak,js-tracer,hashkey
 
 jobs:
+  hashkey-gate:
+    name: HashKey B20 release gate
+    if: ${{ contains(github.ref_name, '-hsk-b20') }}
+    runs-on: depot-ubuntu-latest-16
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # master
+        with:
+          toolchain: nightly
+          components: clippy,rustfmt
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # master
+        with:
+          toolchain: "1.95"
+      - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Run HashKey B20 release gate
+        run: ./.github/scripts/hashkey-release-gate.sh all
+
   prepare:
     name: Prepare release
+    needs: hashkey-gate
+    if: ${{ always() && (needs.hashkey-gate.result == 'success' || needs.hashkey-gate.result == 'skipped') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -111,6 +136,22 @@ jobs:
             flags+=(--prerelease)
           fi
           gh release create "$TAG_NAME" "${flags[@]}"
+
+      - name: Publish HashKey release metadata
+        if: ${{ contains(steps.release_info.outputs.tag_name, '-hsk-b20') }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG_NAME: ${{ steps.release_info.outputs.tag_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/hashkey_release_gate.py \
+            --root . \
+            --write-release-metadata hashkey-release-metadata.json \
+            --tag "$TAG_NAME" \
+            --commit "$GITHUB_SHA"
+          gh release upload "$TAG_NAME" hashkey-release-metadata.json --clobber
 
   release-docker:
     name: Release Docker
@@ -242,6 +283,21 @@ jobs:
             $bin --version || true
             printf '%s_bin_path=%s\n' "$name" "$bin" >> "$GITHUB_ENV"
           done
+
+      - name: Smoke binary surfaces
+        env:
+          HASHKEY_EXPECTED_TAG: ${{ needs.prepare.outputs.tag_name }}
+          OUT_DIR: target/${{ matrix.target }}/${{ env.RUST_PROFILE }}
+        shell: bash
+        run: .github/scripts/hashkey-artifact-smoke.sh "$OUT_DIR" basic
+
+      - name: Smoke HashKey standalone execution
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        env:
+          HASHKEY_EXPECTED_TAG: ${{ needs.prepare.outputs.tag_name }}
+          OUT_DIR: target/${{ matrix.target }}/${{ env.RUST_PROFILE }}
+        shell: bash
+        run: .github/scripts/hashkey-artifact-smoke.sh "$OUT_DIR" execution
 
       - name: Archive binaries
         id: artifacts
