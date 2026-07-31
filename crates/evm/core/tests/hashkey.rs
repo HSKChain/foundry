@@ -8,18 +8,19 @@ use foundry_evm_core::{
     FoundryBlock, FoundryContextExt, InspectorExt,
     backend::Backend,
     evm::{FoundryEvmFactory, OpEvmNetwork},
-    fork::MultiFork,
 };
-use foundry_evm_networks::{HSK_B20_LOCAL_ADMIN, NetworkConfigs, ResolvedNetworkProfile};
+use foundry_evm_networks::{
+    HSK_B20_LOCAL_ADMIN, NetworkConfigs, NetworkExecutionContext, ResolvedNetworkProfile,
+};
 use hsk_b20_precompiles::{
     ActivationFeature, B20Variant, IActivationRegistry, IB20, IB20Factory, IB20Stablecoin,
     IPolicyRegistry,
 };
 use op_revm::OpTransaction;
 use revm::{
-    DatabaseCommit, Inspector,
+    DatabaseCommit, DatabaseRef, Inspector,
     context::{BlockEnv, CfgEnv, TxEnv, result::ExecutionResult},
-    state::{AccountInfo, Bytecode, EvmState},
+    state::{AccountInfo, EvmState},
 };
 use std::sync::{
     Arc,
@@ -109,25 +110,13 @@ impl<CTX> Inspector<CTX> for RecordingProfileInspector {
 }
 
 fn backend(profile: ResolvedNetworkProfile) -> Backend<OpEvmNetwork> {
-    let (forks, _fork_handler) = MultiFork::new();
-    let mut backend = Backend::new(forks, None).unwrap();
+    let mut backend = Backend::spawn_with_network_profile(
+        None,
+        profile,
+        NetworkExecutionContext::new(CHAIN_ID, 0),
+    )
+    .unwrap();
     backend.insert_account_info(CALLER, AccountInfo { balance: U256::MAX, ..Default::default() });
-
-    let alloc = profile.b20_genesis_alloc().unwrap();
-    for (address, code_hash, nonce) in alloc.markers {
-        backend.insert_account_info(
-            address,
-            AccountInfo {
-                code: Some(Bytecode::new_raw(Bytes::from_static(&[0xef]))),
-                code_hash,
-                nonce,
-                ..Default::default()
-            },
-        );
-    }
-    for (address, slot, value) in alloc.feature_seeds {
-        backend.insert_account_storage(address, slot, value).unwrap();
-    }
     backend
 }
 
@@ -463,6 +452,9 @@ fn activation_snapshot_survives_warp_and_refreshes_on_later_evm_creation() {
         hsk_b20_config::B20Config::new(Some(100), Some(Address::repeat_byte(0x11))).unwrap();
     let profile = NetworkConfigs::with_hashkey().resolve().with_b20_config_for_test(config);
     let mut backend = backend(profile);
+    let (activation_registry, feature_slot, _) =
+        profile.b20_genesis_alloc().unwrap().feature_seeds[0];
+    backend.insert_account_storage(activation_registry, feature_slot, U256::ZERO).unwrap();
 
     let mut created_at_99 = OpEvmFactory::default().create_foundry_evm_with_inspector(
         &mut backend,
@@ -484,4 +476,5 @@ fn activation_snapshot_survives_warp_and_refreshes_on_later_evm_creation() {
         assert!(later_evm.precompiles().get(&B20_FACTORY).is_some(), "timestamp {timestamp}");
         drop(later_evm);
     }
+    assert_eq!(backend.storage_ref(activation_registry, feature_slot).unwrap(), U256::ZERO);
 }

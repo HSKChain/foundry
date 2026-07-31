@@ -556,12 +556,17 @@ impl ResolvedNetworkProfile {
         if self.hashkey {
             self.inject_b20_precompiles(precompiles, _context)?;
         }
+        self.inject_reusable_precompiles(precompiles);
+        Ok(())
+    }
+
+    /// Installs profile precompiles that do not depend on an execution snapshot.
+    pub fn inject_reusable_precompiles(self, precompiles: &mut PrecompilesMap) {
         if self.celo {
             precompiles.apply_precompile(&CELO_TRANSFER_ADDRESS, move |_| {
                 Some(celo::transfer::precompile())
             });
         }
-        Ok(())
     }
 
     /// Installs B20 singletons and dynamic lookup when the activation snapshot is active.
@@ -937,12 +942,14 @@ mod tests {
     #[test]
     fn profile_precompile_projection_preserves_celo_behavior() {
         let mut precompiles = PrecompilesMap::from_static(Precompiles::cancun());
-        NetworkConfigs::with_celo()
-            .resolve()
-            .inject_precompiles(&mut precompiles, NetworkExecutionContext::new(1, 0))
-            .unwrap();
+        let profile = NetworkConfigs::with_celo().resolve();
+        profile.inject_precompiles(&mut precompiles, NetworkExecutionContext::new(1, 0)).unwrap();
 
         assert!(precompiles.get(&CELO_TRANSFER_ADDRESS).is_some());
+
+        let mut reusable = PrecompilesMap::from_static(Precompiles::cancun());
+        profile.inject_reusable_precompiles(&mut reusable);
+        assert!(reusable.get(&CELO_TRANSFER_ADDRESS).is_some());
     }
 
     #[test]
@@ -1158,6 +1165,12 @@ mod tests {
         assert!(precompiles.get(&B20_FACTORY).is_some());
         assert!(precompiles.get(&B20_ACTIVATION_REGISTRY).is_some());
         assert!(precompiles.get(&B20_POLICY_REGISTRY).is_some());
+
+        let mut reusable = PrecompilesMap::from_static(Precompiles::prague());
+        profile.inject_reusable_precompiles(&mut reusable);
+        assert!(reusable.get(&B20_FACTORY).is_none());
+        assert!(reusable.get(&B20_ACTIVATION_REGISTRY).is_none());
+        assert!(reusable.get(&B20_POLICY_REGISTRY).is_none());
 
         let labels = profile.precompile_labels(None);
         assert_eq!(labels.get(&B20_FACTORY), Some(&"B20Factory".to_string()));
