@@ -164,6 +164,7 @@ impl<FEN: FoundryEvmNetwork> ChiselDispatcher<FEN> {
 
         let mut decoder = CallTraceDecoderBuilder::new()
             .with_labels(result.labeled_addresses.clone())
+            .with_network_profile(session_config.network_profile, result.network_context)
             .with_signature_identifier(SignaturesIdentifier::from_config(
                 &session_config.foundry_config,
             )?)

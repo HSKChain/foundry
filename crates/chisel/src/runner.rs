@@ -8,8 +8,10 @@ use eyre::Result;
 use foundry_evm::{
     core::evm::{EthEvmNetwork, FoundryEvmNetwork},
     executors::{DeployResult, Executor, RawCallResult},
+    revm::context::Block as _,
     traces::{TraceKind, Traces},
 };
+use foundry_evm_networks::NetworkExecutionContext;
 
 /// The function selector of the REPL contract's entrypoint, the `run()` function.
 static RUN_SELECTOR: [u8; 4] = [0xc0, 0x40, 0x62, 0x26];
@@ -47,6 +49,8 @@ pub struct ChiselResult {
     pub returned: Bytes,
     /// Called address
     pub address: Address,
+    /// Network activation snapshot used by the execution.
+    pub network_context: NetworkExecutionContext,
     /// EVM State at the final instruction of the `run()` function
     pub state: Option<(Vec<U256>, Vec<u8>)>,
 }
@@ -97,6 +101,11 @@ impl<FEN: FoundryEvmNetwork> ChiselRunner<FEN> {
         let RawCallResult {
             result, reverted, logs, traces, labels, chisel_state, gas_used, ..
         } = res;
+        let evm_env = self.executor.evm_env();
+        let network_context = NetworkExecutionContext::new(
+            evm_env.cfg_env.chain_id,
+            evm_env.block_env.timestamp().saturating_to(),
+        );
 
         Ok(ChiselResult {
             returned: result,
@@ -106,6 +115,7 @@ impl<FEN: FoundryEvmNetwork> ChiselRunner<FEN> {
             traces: traces.map(|traces| vec![(TraceKind::Execution, traces)]).unwrap_or_default(),
             labeled_addresses: labels,
             address,
+            network_context,
             state: chisel_state,
         })
     }
