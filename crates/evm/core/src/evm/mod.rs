@@ -15,6 +15,7 @@ use alloy_primitives::{Address, Signature, U256};
 use alloy_rlp::Decodable;
 use foundry_common::{FoundryReceiptResponse, FoundryTransactionBuilder, fmt::UIfmt};
 use foundry_config::FromEvmVersion;
+use foundry_evm_networks::EvmFamily;
 use foundry_fork_db::{DatabaseError, ForkBlockEnv};
 use op_alloy_network::Optimism;
 use op_revm::OpHaltReason;
@@ -45,6 +46,9 @@ pub use tempo::*;
 
 /// Foundry's supertrait associating [Network] with [FoundryEvmFactory]
 pub trait FoundryEvmNetwork: Copy + Debug + Default + 'static {
+    /// Base EVM family implemented by this network binding.
+    const EVM_FAMILY: EvmFamily;
+
     type Network: Network<
             TxEnvelope: Decodable
                             + SignerRecoverable
@@ -64,6 +68,8 @@ pub trait FoundryEvmNetwork: Copy + Debug + Default + 'static {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct EthEvmNetwork;
 impl FoundryEvmNetwork for EthEvmNetwork {
+    const EVM_FAMILY: EvmFamily = EvmFamily::Ethereum;
+
     type Network = Ethereum;
     type EvmFactory = EthEvmFactory;
 }
@@ -71,6 +77,8 @@ impl FoundryEvmNetwork for EthEvmNetwork {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct TempoEvmNetwork;
 impl FoundryEvmNetwork for TempoEvmNetwork {
+    const EVM_FAMILY: EvmFamily = EvmFamily::Tempo;
+
     type Network = TempoNetwork;
     type EvmFactory = TempoEvmFactory;
 }
@@ -78,6 +86,8 @@ impl FoundryEvmNetwork for TempoEvmNetwork {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct OpEvmNetwork;
 impl FoundryEvmNetwork for OpEvmNetwork {
+    const EVM_FAMILY: EvmFamily = EvmFamily::Optimism;
+
     type Network = Optimism;
     type EvmFactory = OpEvmFactory;
 }
