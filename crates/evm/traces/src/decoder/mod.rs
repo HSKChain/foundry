@@ -292,6 +292,13 @@ impl CallTraceDecoder {
         }
     }
 
+    /// Updates the activation snapshot used by network-owned trace identities.
+    #[inline]
+    pub const fn with_network_context(mut self, context: NetworkExecutionContext) -> Self {
+        self.network_context = context;
+        self
+    }
+
     /// Clears all known addresses.
     pub fn clear_addresses(&mut self) {
         self.contracts.clear();

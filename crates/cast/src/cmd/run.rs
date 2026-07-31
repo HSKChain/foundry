@@ -39,7 +39,7 @@ use foundry_evm::{
     opts::EvmOpts,
     traces::{InternalTraceMode, TraceMode, Traces},
 };
-use foundry_evm_networks::{NetworkConfigs, ResolvedNetworkProfile};
+use foundry_evm_networks::{NetworkConfigs, NetworkExecutionContext, ResolvedNetworkProfile};
 use futures::TryFutureExt;
 use revm::{DatabaseRef, context::Block};
 
@@ -340,6 +340,11 @@ impl RunArgs {
             }
         }
 
+        let network_context = NetworkExecutionContext::new(
+            evm_env.cfg_env.chain_id,
+            evm_env.block_env.timestamp().saturating_to(),
+        );
+
         // Execute our transaction
         let result = {
             executor.set_trace_printer(self.trace_printer);
@@ -371,6 +376,8 @@ impl RunArgs {
             decode_internal,
             disable_labels,
             self.trace_depth,
+            network_profile,
+            network_context,
         )
         .await?;
 

@@ -612,13 +612,23 @@ impl<N: Network> Backend<N> {
         Err(BlockchainError::TempoTransactionUnsupported)
     }
 
+    /// Returns a decoder projected for the executing EVM snapshot.
+    fn call_trace_decoder(&self, evm_env: &EvmEnv) -> Arc<CallTraceDecoder> {
+        Arc::new(self.call_trace_decoder.as_ref().clone().with_network_context(
+            NetworkExecutionContext::new(
+                evm_env.cfg_env.chain_id,
+                evm_env.block_env.timestamp.saturating_to(),
+            ),
+        ))
+    }
+
     /// Builds the [`InspectorTxConfig`] from the backend's current settings.
-    fn inspector_tx_config(&self) -> InspectorTxConfig {
+    fn inspector_tx_config(&self, evm_env: &EvmEnv) -> InspectorTxConfig {
         InspectorTxConfig {
             print_traces: self.print_traces,
             print_logs: self.print_logs,
             enable_steps_tracing: self.enable_steps_tracing,
-            call_trace_decoder: self.call_trace_decoder.clone(),
+            call_trace_decoder: self.call_trace_decoder(evm_env),
         }
     }
 
@@ -1543,7 +1553,7 @@ impl<N: Network> Backend<N> {
         inspector.print_logs();
 
         if self.print_traces {
-            inspector.into_print_traces(self.call_trace_decoder.clone());
+            inspector.into_print_traces(self.call_trace_decoder(&evm_env));
         }
 
         Ok((exit_reason, out, gas_used as u128, state))
@@ -2392,7 +2402,7 @@ impl<N: Network> Backend<N> {
         inspector.print_logs();
 
         if self.print_traces {
-            inspector.print_traces(self.call_trace_decoder.clone());
+            inspector.print_traces(self.call_trace_decoder(&evm_env));
         }
 
         Ok((exit_reason, out, gas_used, state, logs))
@@ -2647,7 +2657,7 @@ where
 
                 let spec_id = *evm_env.spec_id();
 
-                let inspector_tx_config = self.inspector_tx_config();
+                let inspector_tx_config = self.inspector_tx_config(&evm_env);
                 let gas_config = self.pool_tx_gas_config(&evm_env);
 
                 let (pool_result, block_result) = self.execute_with_block_executor(
@@ -2845,7 +2855,7 @@ where
 
         let spec_id = *evm_env.spec_id();
 
-        let inspector_tx_config = self.inspector_tx_config();
+        let inspector_tx_config = self.inspector_tx_config(&evm_env);
         let gas_config = self.pool_tx_gas_config(&evm_env);
 
         let (pool_result, block_result) = self.execute_with_block_executor(
@@ -2991,7 +3001,7 @@ where
 
                             inspector.print_logs();
                             if self.print_traces {
-                                inspector.print_traces(self.call_trace_decoder.clone());
+                                inspector.print_traces(self.call_trace_decoder(&evm_env));
                             }
 
                             let tracing_inspector = inspector.tracer.expect("tracer disappeared");
@@ -3304,7 +3314,7 @@ where
 
             let spec_id = *evm_env.spec_id();
 
-            let inspector_tx_config = self.inspector_tx_config();
+            let inspector_tx_config = self.inspector_tx_config(&evm_env);
             let gas_config = self.pool_tx_gas_config(&evm_env);
 
             self.execute_with_block_executor(
@@ -4059,7 +4069,7 @@ impl Backend<FoundryNetwork> {
 
                     inspector.print_logs();
                     if self.print_traces {
-                        inspector.into_print_traces(self.call_trace_decoder.clone());
+                        inspector.into_print_traces(self.call_trace_decoder(&evm_env));
                     }
 
                     // commit the transaction

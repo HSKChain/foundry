@@ -42,9 +42,10 @@ use foundry_evm::{
     opts::EvmOpts,
     traces::{InternalTraceMode, TraceMode},
 };
-use foundry_evm_networks::{NetworkConfigs, ResolvedNetworkProfile};
+use foundry_evm_networks::{NetworkConfigs, NetworkExecutionContext, ResolvedNetworkProfile};
 use foundry_wallets::WalletOpts;
 use regex::Regex;
+use revm::context::Block as _;
 use std::{str::FromStr, sync::LazyLock};
 
 // matches override pattern <address>:<slot>:<value>
@@ -338,6 +339,11 @@ impl CallArgs {
                 }
             }
 
+            let network_context = NetworkExecutionContext::new(
+                evm_env.cfg_env.chain_id,
+                evm_env.block_env.timestamp().saturating_to(),
+            );
+
             let trace_mode = TraceMode::Call
                 .with_debug(debug)
                 .with_decode_internal(if decode_internal {
@@ -419,6 +425,8 @@ impl CallArgs {
                 decode_internal,
                 disable_labels,
                 None,
+                network_profile,
+                network_context,
             )
             .await?;
 

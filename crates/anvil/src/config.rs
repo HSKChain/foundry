@@ -72,7 +72,7 @@ use foundry_evm::{
     traces::{CallTraceDecoderBuilder, identifier::SignaturesIdentifier},
     utils::get_blob_params,
 };
-use foundry_evm_networks::{NetworkConfigs, ResolvedNetworkProfile};
+use foundry_evm_networks::{NetworkConfigs, NetworkExecutionContext, ResolvedNetworkProfile};
 
 /// Default port the rpc will open
 pub const NODE_PORT: u16 = 8545;
@@ -1217,7 +1217,12 @@ impl NodeConfig {
             genesis_init: self.genesis.clone(),
         };
 
-        let mut decoder_builder = CallTraceDecoderBuilder::new();
+        let network_context = NetworkExecutionContext::new(
+            evm_env.cfg_env.chain_id,
+            evm_env.block_env.timestamp.saturating_to(),
+        );
+        let mut decoder_builder =
+            CallTraceDecoderBuilder::new().with_network_profile(network_profile, network_context);
         if self.print_traces {
             // if traces should get printed we configure the decoder with the signatures cache
             if let Ok(identifier) = SignaturesIdentifier::new(false) {

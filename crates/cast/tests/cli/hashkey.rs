@@ -46,7 +46,16 @@ fn wait_for_receipt(cmd: &mut foundry_test_utils::TestCommand, tx_hash: &str, rp
     cmd.cast_fuse().args(["receipt", tx_hash, "--rpc-url", rpc]).assert_success();
 }
 
-casttest!(hashkey_b20_anvil_cast_workflow, async |_prj, cmd| {
+casttest!(hashkey_b20_anvil_cast_workflow, async |prj, cmd| {
+    prj.create_file(
+        "foundry.toml",
+        r#"
+[default]
+network = "hashkey"
+"#,
+    );
+    cmd.set_current_dir(prj.root());
+
     let profile = NetworkConfigs::with_hashkey().resolve();
     let alloc = profile.b20_genesis_alloc().unwrap();
     let factory = alloc.markers[0].0.to_string();
@@ -181,9 +190,72 @@ casttest!(hashkey_b20_anvil_cast_workflow, async |_prj, cmd| {
         .assert_json_stdout(str![[r#"
 [42]
 "#]]);
+
+    cmd.cast_fuse()
+        .args([
+            "call",
+            &token,
+            "balanceOf(address)(uint256)",
+            &recipient,
+            "--trace",
+            "--rpc-url",
+            &rpc,
+        ])
+        .assert_success()
+        .stdout_eq(str![[r#"
+Traces:
+  [..] B20Asset::balanceOf([..])
+    └─ ← [Return] 42
+
+
+Transaction successfully executed.
+[GAS]
+
+"#]]);
+
     cmd.cast_fuse()
         .args(["run", &mint_tx, "--network", "hashkey", "--rpc-url", &rpc])
-        .assert_success();
+        .assert_success()
+        .stdout_eq(str![[r#"
+Executing previous transactions from the block.
+Traces:
+  [..] B20Asset::mint([..], 42)
+    ├─ emit Transfer(from: 0x0000000000000000000000000000000000000000, to: [..], amount: 42)
+    └─ ← [Return]
+
+
+Transaction successfully executed.
+[GAS]
+
+"#]]);
+
+    cmd.cast_fuse()
+        .args([
+            "call",
+            &token,
+            "mint(address,uint256)",
+            &recipient,
+            "1",
+            "--from",
+            &recipient,
+            "--trace",
+            "--rpc-url",
+            &rpc,
+        ])
+        .assert_success()
+        .stdout_eq(str![[r#"
+Traces:
+  [4318] B20Asset::mint(0x70997970C51812dc3A010C7d01b50e0d17dc79C8, 1)
+    └─ ← [Revert] AccessControlUnauthorizedAccount(0x70997970C51812dc3A010C7d01b50e0d17dc79C8, 0x154c00819833dac601ee5ddded6fda79d9d8b506b911b3dbd54cdb95fe6c3686)
+
+
+[GAS]
+
+"#]])
+        .stderr_eq(str![[r#"
+Error: Transaction failed.
+
+"#]]);
 
     cmd.cast_fuse()
         .args(["rpc", "anvil_impersonateAccount", &admin, "--rpc-url", &rpc])
