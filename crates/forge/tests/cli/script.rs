@@ -16,6 +16,61 @@ use regex::Regex;
 use serde_json::Value;
 use std::{env, fs, path::PathBuf};
 
+#[cfg(feature = "hashkey")]
+forgetest!(tempo_fee_token_conflicts_with_explicit_hashkey, |prj, cmd| {
+    let script = prj.add_source(
+        "FeeTokenScript",
+        r#"
+contract FeeTokenScript {
+    function run() external {}
+}
+"#,
+    );
+
+    cmd.args([
+        "script",
+        script.to_str().unwrap(),
+        "--network",
+        "hashkey",
+        "--tempo.fee-token",
+        "0x0000000000000000000000000000000000000001",
+    ])
+    .assert_failure()
+    .stdout_eq(str![r#""#])
+    .stderr_eq(str![[r#"
+Error: network requirement `tempo` from `--tempo.fee-token` conflicts with configured network `hashkey`
+
+"#]]);
+});
+
+#[cfg(feature = "hashkey")]
+forgetest!(tempo_fee_token_conflict_json_keeps_stdout_clean, |prj, cmd| {
+    let script = prj.add_source(
+        "FeeTokenScript",
+        r#"
+contract FeeTokenScript {
+    function run() external {}
+}
+"#,
+    );
+
+    cmd.args([
+        "script",
+        script.to_str().unwrap(),
+        "--network",
+        "hashkey",
+        "--tempo.fee-token",
+        "0x0000000000000000000000000000000000000001",
+        "--json",
+    ])
+    .assert_failure()
+    .stdout_eq(str![r#""#])
+    .stderr_eq(str![[r#"
+Error: network requirement `tempo` from `--tempo.fee-token` conflicts with configured network `hashkey`
+
+"#]]);
+});
+
 // Tests that fork cheat codes can be used in script
 forgetest_init!(
     #[ignore]

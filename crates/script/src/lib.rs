@@ -57,12 +57,15 @@ use foundry_evm::{
     },
     opts::{
         EvmOpts,
-        resolution::{CommandProfileResolution, NetworkIntent, ResolvedEvmOpts},
+        resolution::{
+            CommandProfileResolution, NetworkIntent, NetworkRequirementSource, ProfileKind,
+            ResolvedEvmOpts, RpcForkIdentitySource,
+        },
     },
     revm::interpreter::InstructionResult,
     traces::{TraceMode, Traces},
 };
-use foundry_evm_networks::{NetworkConfigs, ResolvedNetworkProfile};
+use foundry_evm_networks::ResolvedNetworkProfile;
 use foundry_wallets::MultiWalletOpts;
 use serde::Serialize;
 use std::path::PathBuf;
@@ -250,34 +253,36 @@ pub struct ScriptArgs {
 
 impl ScriptArgs {
     /// Loads config and resolves the command's immutable network profile.
-    async fn resolved_evm_opts(&self) -> Result<(Config, EvmOpts, ResolvedEvmOpts)> {
-        let (config, mut evm_opts) = self.load_config_and_evm_opts()?;
-
+    async fn resolved_evm_opts(&self) -> Result<(Config, ResolvedEvmOpts)> {
+        let (config, evm_opts) = self.load_config_and_evm_opts()?;
+        let fork_identity = RpcForkIdentitySource::from_evm_opts(&evm_opts);
+        let mut intent = NetworkIntent::new();
+        if evm_opts.fork_url.is_some() {
+            intent = intent.with_fork_identity();
+        }
         if self.fee_token.is_some() {
-            // If fee token is set directly select tempo
-            evm_opts.networks = NetworkConfigs::with_tempo();
-        } else {
-            // Auto-detect network from fork chain ID when not explicitly configured.
-            evm_opts.infer_network_from_fork().await;
+            intent =
+                intent.require_profile(ProfileKind::Tempo, NetworkRequirementSource::TempoFeeToken);
         }
 
-        let resolved = CommandProfileResolution::new()
-            .resolve_evm_opts(evm_opts.clone(), NetworkIntent::new())?;
-        Ok((config, evm_opts, resolved))
+        let resolved = CommandProfileResolution::with_fork_identity_source(fork_identity)
+            .resolve_evm_opts_async(evm_opts, intent)
+            .await?;
+        Ok((config, resolved))
     }
 
     async fn preprocess_for_profile<FEN: FoundryEvmNetwork>(
         self,
         config: Config,
-        mut evm_opts: EvmOpts,
         mut resolved: ResolvedEvmOpts,
     ) -> Result<PreprocessedState<FEN>> {
         let network_profile = resolved.network_profile();
         let script_wallets = Wallets::new(self.wallets.get_multi_wallet().await?, self.evm.sender);
         let browser_wallet = self.wallets.browser_signer::<FEN::Network>().await?;
 
-        if let Some(sender) = self.maybe_load_private_key()? {
-            evm_opts.sender = sender;
+        let mut sender = resolved.evm_opts().sender;
+        if let Some(private_key_sender) = self.maybe_load_private_key()? {
+            sender = private_key_sender;
         } else if self.evm.sender.is_none() {
             // If no sender was explicitly set via --sender, auto-detect it from available signers:
             // use the sole signer's address if there's exactly one, or fall back to the browser
@@ -285,21 +290,20 @@ impl ScriptArgs {
             if let Ok(signers) = script_wallets.signers()
                 && signers.len() == 1
             {
-                evm_opts.sender = signers[0];
+                sender = signers[0];
             } else if let Some(signer) = browser_wallet.as_ref().map(|b| b.address()) {
-                evm_opts.sender = signer
+                sender = signer
             }
         }
 
-        resolved = resolved.with_sender(evm_opts.sender);
+        resolved = resolved.with_sender(sender);
         let fee_token = if network_profile.is_tempo() && self.fee_token.is_none() {
             Some(PATH_USD_ADDRESS)
         } else {
             self.fee_token
         };
 
-        let script_config =
-            ScriptConfig::new(config, evm_opts, resolved, self.batch, fee_token).await?;
+        let script_config = ScriptConfig::new(config, resolved, self.batch, fee_token).await?;
         Ok(PreprocessedState { args: self, script_config, script_wallets, browser_wallet })
     }
 
@@ -308,7 +312,7 @@ impl ScriptArgs {
     pub async fn run_script(self) -> Result<()> {
         trace!(target: "script", "executing script command");
 
-        let (config, evm_opts, resolved) = self.resolved_evm_opts().await?;
+        let (config, resolved) = self.resolved_evm_opts().await?;
         let network_profile = resolved.network_profile();
 
         let is_tempo = network_profile.is_tempo();
@@ -319,11 +323,10 @@ impl ScriptArgs {
 
         if is_tempo {
             let batch = self.batch;
-            let bundled =
-                match self.prepare_bundled::<TempoEvmNetwork>(config, evm_opts, resolved).await? {
-                    Some(bundled) => bundled,
-                    None => return Ok(()),
-                };
+            let bundled = match self.prepare_bundled::<TempoEvmNetwork>(config, resolved).await? {
+                Some(bundled) => bundled,
+                None => return Ok(()),
+            };
             let bundled = bundled.wait_for_pending().await?;
             let broadcasted =
                 if batch { bundled.broadcast_batch().await? } else { bundled.broadcast().await? };
@@ -332,9 +335,9 @@ impl ScriptArgs {
             }
             Ok(())
         } else if network_profile.is_optimism() {
-            self.run_generic_script::<OpEvmNetwork>(config, evm_opts, resolved).await
+            self.run_generic_script::<OpEvmNetwork>(config, resolved).await
         } else {
-            self.run_generic_script::<EthEvmNetwork>(config, evm_opts, resolved).await
+            self.run_generic_script::<EthEvmNetwork>(config, resolved).await
         }
     }
 
@@ -345,10 +348,9 @@ impl ScriptArgs {
     async fn prepare_bundled<FEN: FoundryEvmNetwork>(
         self,
         config: Config,
-        evm_opts: EvmOpts,
         resolved: ResolvedEvmOpts,
     ) -> Result<Option<BundledState<FEN>>> {
-        let state = self.preprocess_for_profile::<FEN>(config, evm_opts, resolved).await?;
+        let state = self.preprocess_for_profile::<FEN>(config, resolved).await?;
         let create2_deployer = state.script_config.evm_opts.create2_deployer;
         let compiled = state.compile()?;
 
@@ -440,10 +442,9 @@ impl ScriptArgs {
     async fn run_generic_script<FEN: FoundryEvmNetwork>(
         self,
         config: Config,
-        evm_opts: EvmOpts,
         resolved: ResolvedEvmOpts,
     ) -> Result<()> {
-        let bundled = match self.prepare_bundled::<FEN>(config, evm_opts, resolved).await? {
+        let bundled = match self.prepare_bundled::<FEN>(config, resolved).await? {
             Some(bundled) => bundled,
             None => return Ok(()),
         };
@@ -733,12 +734,12 @@ pub struct ScriptConfig<FEN: FoundryEvmNetwork> {
 impl<FEN: FoundryEvmNetwork> ScriptConfig<FEN> {
     pub async fn new(
         config: Config,
-        evm_opts: EvmOpts,
         resolved_evm_opts: ResolvedEvmOpts,
         batch: bool,
         fee_token: Option<Address>,
     ) -> Result<Self> {
         let network_profile = resolved_evm_opts.network_profile();
+        let evm_opts = resolved_evm_opts.evm_opts().clone();
         let sender_nonce = if let Some(fork_url) = evm_opts.fork_url.as_ref() {
             next_nonce(evm_opts.sender, fork_url, evm_opts.fork_block_number).await?
         } else {
@@ -864,17 +865,17 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn script_config_preserves_hashkey_profile_for_local_simulation() {
         let mut evm_opts = EvmOpts::default();
-        evm_opts.networks = NetworkConfigs::with_hashkey();
+        evm_opts.networks = foundry_evm_networks::NetworkConfigs::with_hashkey();
         let resolved = CommandProfileResolution::new()
-            .resolve_evm_opts(evm_opts.clone(), NetworkIntent::new())
+            .resolve_evm_opts(evm_opts, NetworkIntent::new())
             .unwrap();
         let network_profile = resolved.network_profile();
         let mut script_config =
-            ScriptConfig::<OpEvmNetwork>::new(Config::default(), evm_opts, resolved, false, None)
+            ScriptConfig::<OpEvmNetwork>::new(Config::default(), resolved, false, None)
                 .await
                 .unwrap();
 
-        script_config.evm_opts.networks = NetworkConfigs::default();
+        script_config.evm_opts.networks = foundry_evm_networks::NetworkConfigs::default();
         assert_eq!(script_config.network_profile, network_profile);
         assert!(script_config.network_profile.is_hashkey());
 

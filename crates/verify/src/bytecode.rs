@@ -39,7 +39,7 @@ use foundry_evm::{
     executors::EvmError,
     opts::resolution::{CommandProfileResolution, NetworkIntent},
 };
-use foundry_evm_networks::{EvmFamily, NetworkVariant, ResolvedNetworkProfile};
+use foundry_evm_networks::EvmFamily;
 use revm::{context::Block as _, state::AccountInfo};
 use std::path::PathBuf;
 
@@ -133,22 +133,12 @@ impl figment::Provider for VerifyBytecodeArgs {
     }
 }
 
-fn resolve_verify_network_profile(config: &mut Config, chain: Chain) -> ResolvedNetworkProfile {
-    if config.networks.resolved_network().is_none() {
-        let network = NetworkVariant::from(chain.id());
-        if network != NetworkVariant::Ethereum {
-            config.networks = network.into();
-        }
-    }
-    config.networks.resolve()
-}
-
 impl VerifyBytecodeArgs {
     /// Run the `verify-bytecode` command to verify the bytecode onchain against the locally built
     /// bytecode.
     pub async fn run(self) -> Result<()> {
         // Setup
-        let mut config = self.load_config()?;
+        let config = self.load_config()?;
         let provider = utils::get_provider(&config)?;
 
         // If chain is not set, we try to get it from the RPC.
@@ -157,28 +147,31 @@ impl VerifyBytecodeArgs {
             Some(_) => utils::get_chain(config.chain, &provider).await?,
             None => config.chain.unwrap_or_default(),
         };
+        let (_, evm_opts) = config.clone().load_config_and_evm_opts()?;
+        let resolved = CommandProfileResolution::new()
+            .resolve_evm_opts(evm_opts, NetworkIntent::new().with_chain_hint(chain.id()))?;
 
-        let network_profile = resolve_verify_network_profile(&mut config, chain);
-        match network_profile.evm_family() {
-            EvmFamily::Ethereum => self.run_with_network_and_config::<EthEvmNetwork>(config).await,
-            EvmFamily::Optimism => self.run_with_network_and_config::<OpEvmNetwork>(config).await,
-            EvmFamily::Tempo => self.run_with_network_and_config::<TempoEvmNetwork>(config).await,
+        match resolved.network_profile().evm_family() {
+            EvmFamily::Ethereum => {
+                self.run_with_network_and_config::<EthEvmNetwork>(config, resolved, chain).await
+            }
+            EvmFamily::Optimism => {
+                self.run_with_network_and_config::<OpEvmNetwork>(config, resolved, chain).await
+            }
+            EvmFamily::Tempo => {
+                self.run_with_network_and_config::<TempoEvmNetwork>(config, resolved, chain).await
+            }
         }
     }
 
     async fn run_with_network_and_config<FEN: FoundryEvmNetwork>(
         mut self,
         config: Config,
+        resolved: foundry_evm::opts::resolution::ResolvedEvmOpts,
+        chain: Chain,
     ) -> Result<()> {
-        let (_, evm_opts) = config.clone().load_config_and_evm_opts()?;
-        let resolved = CommandProfileResolution::new()
-            .resolve_evm_opts(evm_opts.clone(), NetworkIntent::new())?;
         let network_profile = resolved.network_profile();
         let provider = ProviderBuilder::<FEN::Network>::from_config(&config)?.build()?;
-        let chain = match config.get_rpc_url() {
-            Some(_) => utils::get_chain::<FEN::Network, _>(config.chain, &provider).await?,
-            None => config.chain.unwrap_or_default(),
-        };
 
         // Set Etherscan options.
         self.etherscan.chain = Some(chain);
@@ -271,13 +264,13 @@ impl VerifyBytecodeArgs {
 
             // Deploy at genesis
             let gen_blk_num = 0_u64;
-            let (mut fork_config, evm_opts) = config.clone().load_config_and_evm_opts()?;
+            let (mut fork_config, _) = config.clone().load_config_and_evm_opts()?;
             let evm_version = etherscan_metadata.evm_version()?.unwrap_or_default();
             let (mut prepared, create2_deployer) = crate::utils::get_tracing_preparation::<FEN>(
                 &mut fork_config,
                 gen_blk_num,
                 evm_version,
-                evm_opts,
+                resolved.evm_opts().create2_deployer,
                 resolved,
             )
             .await?;
@@ -492,13 +485,13 @@ impl VerifyBytecodeArgs {
             };
 
             // Fork the chain at `simulation_block`.
-            let (mut fork_config, evm_opts) = config.clone().load_config_and_evm_opts()?;
+            let (mut fork_config, _) = config.clone().load_config_and_evm_opts()?;
             let evm_version = etherscan_metadata.evm_version()?.unwrap_or_default();
             let (mut prepared, create2_deployer) = crate::utils::get_tracing_preparation::<FEN>(
                 &mut fork_config,
                 simulation_block - 1, // env.fork_block_number
                 evm_version,
-                evm_opts,
+                resolved.evm_opts().create2_deployer,
                 resolved,
             )
             .await?;
@@ -644,13 +637,16 @@ mod tests {
 
     #[cfg(feature = "hashkey")]
     #[test]
-    fn verify_replay_preserves_explicit_hashkey_profile() {
+    fn verify_chain_hint_preserves_explicit_hashkey_profile() {
         let mut config = Config::default();
-        config.networks = NetworkVariant::HashKey.into();
+        config.networks = foundry_evm_networks::NetworkConfigs::with_hashkey();
+        let (_, evm_opts) = config.clone().load_config_and_evm_opts().unwrap();
 
-        let profile = resolve_verify_network_profile(&mut config, Chain::from_id(1));
+        let resolved = CommandProfileResolution::new()
+            .resolve_evm_opts(evm_opts, NetworkIntent::new().with_chain_hint(1))
+            .unwrap();
 
-        assert!(profile.is_hashkey());
-        assert_eq!(profile.evm_family(), EvmFamily::Optimism);
+        assert!(resolved.network_profile().is_hashkey());
+        assert_eq!(resolved.network_profile().evm_family(), EvmFamily::Optimism);
     }
 }
