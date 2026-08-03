@@ -334,8 +334,11 @@ impl<FEN: FoundryEvmNetwork> ChiselDispatcher<FEN> {
 
     pub(crate) fn set_fork(&mut self, url: Option<String>) -> Result<()> {
         let Some(url) = url else {
-            self.source_mut().config.evm_opts.fork_url = None;
-            self.source_mut().config.state = None;
+            let config = &mut self.source_mut().config;
+            config.evm_opts.fork_url = None;
+            config.resolved_evm_opts =
+                config.resolved_evm_opts.take().map(|resolved| resolved.with_fork_url(None));
+            config.state = None;
             sh_println!("Now using local environment.")?;
             return Ok(());
         };
@@ -358,10 +361,13 @@ impl<FEN: FoundryEvmNetwork> ChiselDispatcher<FEN> {
 
         sh_println!("Set fork URL to {}", fork_url.yellow())?;
 
-        self.source_mut().config.evm_opts.fork_url = Some(fork_url);
+        let config = &mut self.source_mut().config;
+        config.evm_opts.fork_url = Some(fork_url.clone());
+        config.resolved_evm_opts =
+            config.resolved_evm_opts.take().map(|resolved| resolved.with_fork_url(Some(fork_url)));
         // Clear reusable state so that it is re-instantiated with the new fork
         // upon the next execution of the session source.
-        self.source_mut().config.state = None;
+        config.state = None;
 
         Ok(())
     }
@@ -613,6 +619,43 @@ mod tests {
 
         assert_eq!(loaded.network_profile, network_profile);
         assert!(loaded.state.is_none());
+    }
+
+    #[test]
+    fn set_fork_updates_resolved_carrier() {
+        use foundry_evm::opts::{
+            EvmOpts,
+            resolution::{CommandProfileResolution, NetworkIntent},
+        };
+
+        let resolved = CommandProfileResolution::new()
+            .resolve_evm_opts(EvmOpts::default(), NetworkIntent::new())
+            .unwrap();
+        let config = SessionSourceConfig::<EthEvmNetwork> {
+            foundry_config: Config::default(),
+            evm_opts: EvmOpts::default(),
+            network_profile: NetworkConfigs::default().resolve(),
+            resolved_evm_opts: Some(resolved),
+            ..Default::default()
+        };
+        let mut dispatcher = ChiselDispatcher::new(config).unwrap();
+
+        dispatcher.set_fork(Some("http://localhost:8545".to_string())).unwrap();
+
+        let source_config = &dispatcher.source().config;
+        assert_eq!(
+            source_config.resolved_evm_opts.as_ref().unwrap().evm_opts().fork_url.as_deref(),
+            Some("http://localhost:8545")
+        );
+        assert_eq!(source_config.evm_opts.fork_url.as_deref(), Some("http://localhost:8545"));
+        assert!(source_config.state.is_none());
+
+        dispatcher.set_fork(None).unwrap();
+
+        let source_config = &dispatcher.source().config;
+        assert!(source_config.resolved_evm_opts.as_ref().unwrap().evm_opts().fork_url.is_none());
+        assert!(source_config.evm_opts.fork_url.is_none());
+        assert!(source_config.state.is_none());
     }
 
     #[test]

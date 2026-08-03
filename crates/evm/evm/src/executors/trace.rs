@@ -102,7 +102,7 @@ impl<FEN: FoundryEvmNetwork> TracingExecutor<FEN> {
         TxEnvFor<FEN>: FoundryTransaction + Default,
     {
         let resolved = resolved
-            .with_fork_url(config.get_rpc_url_or_localhost_http()?.into_owned())
+            .with_fork_url(Some(config.get_rpc_url_or_localhost_http()?.into_owned()))
             .with_fork_block_number(config.fork_block_number);
         let network_profile = resolved.network_profile();
 

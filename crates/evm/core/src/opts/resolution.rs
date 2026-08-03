@@ -394,8 +394,8 @@ impl ResolvedEvmOpts {
 
     /// Updates the fork endpoint without changing the resolved network profile.
     #[doc(hidden)]
-    pub fn with_fork_url(mut self, fork_url: String) -> Self {
-        self.evm_opts.fork_url = Some(fork_url);
+    pub fn with_fork_url(mut self, fork_url: Option<String>) -> Self {
+        self.evm_opts.fork_url = fork_url;
         self
     }
 
