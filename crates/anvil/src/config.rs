@@ -653,10 +653,12 @@ impl NodeConfig {
     }
 
     /// Sets the chain id and updates all wallets
+    ///
+    /// The chain selection is an execution-chain update only; network profile inference is
+    /// owned by the canonical command resolution layer and must not be mutated here.
     pub fn set_chain_id(&mut self, chain_id: Option<impl Into<u64>>) {
         self.chain_id = chain_id.map(Into::into);
         let chain_id = self.get_chain_id();
-        self.networks.with_chain_id(chain_id);
         self.genesis_accounts.iter_mut().for_each(|wallet| {
             *wallet = wallet.clone().with_chain_id(Some(chain_id));
         });

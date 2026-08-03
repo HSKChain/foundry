@@ -17,6 +17,7 @@ mod optimism;
 mod otterscan;
 mod proof;
 mod pubsub;
+mod resolution;
 mod revert;
 mod sign;
 mod simulate;

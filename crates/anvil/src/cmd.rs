@@ -12,8 +12,14 @@ use clap::Parser;
 use core::fmt;
 use foundry_common::shell;
 use foundry_config::{Chain, Config, FigmentProviders};
-use foundry_evm::hardfork::{EthereumHardfork, OpHardfork};
-use foundry_evm_networks::NetworkConfigs;
+use foundry_evm::{
+    hardfork::{EthereumHardfork, OpHardfork},
+    opts::{
+        EvmOpts,
+        resolution::{CommandProfileResolution, NetworkIntent, RpcForkIdentitySource},
+    },
+};
+use foundry_evm_networks::{NetworkConfigs, ResolvedNetworkProfile};
 use foundry_primitives::FoundryReceiptEnvelope;
 use futures::FutureExt;
 use rand_08::{SeedableRng, rngs::StdRng};
@@ -223,6 +229,16 @@ const DEFAULT_DUMP_INTERVAL: Duration = Duration::from_secs(60);
 
 impl NodeArgs {
     pub fn into_node_config(self) -> eyre::Result<NodeConfig> {
+        let networks = self.evm.networks;
+        self.into_node_config_with_networks(networks)
+    }
+
+    /// Builds the node config with the resolved network selection.
+    ///
+    /// The supplied networks are authoritative for profile-aware setup, including hardfork
+    /// namespace selection, so the CLI entry point resolves the command profile before this
+    /// step.
+    fn into_node_config_with_networks(self, networks: NetworkConfigs) -> eyre::Result<NodeConfig> {
         let genesis_balance = Unit::ETHER.wei().saturating_mul(U256::from(self.balance));
         let compute_units_per_second =
             if self.evm.no_rate_limit { Some(u64::MAX) } else { self.evm.compute_units_per_second };
@@ -241,9 +257,9 @@ impl NodeArgs {
 
         let hardfork = match &self.hardfork {
             Some(hf) => {
-                if self.evm.networks.is_optimism() {
+                if networks.is_optimism() {
                     Some(OpHardfork::from_str(hf)?.into())
-                } else if self.evm.networks.is_tempo() {
+                } else if networks.is_tempo() {
                     Some(TempoHardfork::from_str(hf)?.into())
                 } else {
                     Some(EthereumHardfork::from_str(hf)?.into())
@@ -305,7 +321,7 @@ impl NodeArgs {
             .with_transaction_block_keeper(self.transaction_block_keeper)
             .with_max_transactions(self.max_transactions)
             .with_max_persisted_states(self.max_persisted_states)
-            .with_networks(self.evm.networks)
+            .with_networks(networks)
             .with_disable_default_create2_deployer(self.evm.disable_default_create2_deployer)
             .with_disable_pool_balance_checks(self.evm.disable_pool_balance_checks)
             .with_slots_in_an_epoch(self.slots_in_an_epoch)
@@ -349,6 +365,59 @@ impl NodeArgs {
         self.dump_state.as_ref().or_else(|| self.state.as_ref().map(|s| &s.path)).cloned()
     }
 
+    /// Builds the canonical network intent for the node.
+    ///
+    /// Standalone nodes use the configured chain or genesis chain identity as an
+    /// identity-bearing hint. Forked nodes do not: a fork `--chain-id` remains an execution
+    /// override, and the remote fork identity (or an explicit network selection) decides the
+    /// profile.
+    fn network_intent(&self, chain_id: Option<Chain>, genesis: Option<&Genesis>) -> NetworkIntent {
+        if self.evm.fork_url.is_empty() {
+            let chain_id = chain_id
+                .map(|chain| chain.id())
+                .or_else(|| genesis.map(|genesis| genesis.config.chain_id));
+            if let Some(chain_id) = chain_id {
+                return NetworkIntent::new().with_chain_hint(chain_id);
+            }
+        }
+        NetworkIntent::new()
+    }
+
+    /// Resolves the node's command network profile through the canonical resolver and returns
+    /// the fully configured node.
+    ///
+    /// The private Anvil role adapter normalizes the domain inputs into one [`NetworkIntent`]
+    /// and delegates precedence, fork identity, errors, and fallback to the shared resolver.
+    /// Standalone configured chain or genesis chain identity participates as a profile hint;
+    /// a fork `--chain-id` is an execution override and cannot replace the remote fork network
+    /// identity. The resolved profile is persisted on the node config so setup, reset, normal
+    /// and inspected execution, and trace projection consume one identity without repeating
+    /// resolution logic.
+    async fn resolve_node_config(self) -> eyre::Result<NodeConfig> {
+        let fork_url = self.evm.fork_url.first().map(|f| f.url.clone());
+        let chain_id = self.evm.chain_id;
+        let genesis = self.init.clone();
+        let intent = self.network_intent(chain_id, genesis.as_ref());
+        let networks = self.evm.networks;
+
+        // The resolver reads the fork endpoint through the shared RPC adapter; only the fork
+        // URL participates in identity lookup.
+        let evm_opts = EvmOpts { fork_url, networks, ..Default::default() };
+        let fork_identity = RpcForkIdentitySource::from_evm_opts(&evm_opts);
+        let resolved = CommandProfileResolution::with_fork_identity_source(fork_identity)
+            .resolve_evm_opts_async(evm_opts, intent)
+            .await?;
+
+        // An explicit user selection is preserved verbatim; otherwise persist the resolved
+        // profile so profile-aware setup and execution consume one network identity.
+        let networks = if networks.has_explicit_selection() {
+            networks
+        } else {
+            resolved_network_configs(resolved.network_profile())
+        };
+        self.into_node_config_with_networks(networks)
+    }
+
     /// Starts the node
     ///
     /// See also [crate::spawn()]
@@ -358,7 +427,7 @@ impl NodeArgs {
             self.state_interval.map(Duration::from_secs).unwrap_or(DEFAULT_DUMP_INTERVAL);
         let preserve_historical_states = self.preserve_historical_states;
 
-        let (api, mut handle) = crate::try_spawn(self.into_node_config()?).await?;
+        let (api, mut handle) = crate::try_spawn(self.resolve_node_config().await?).await?;
 
         // sets the signal handler to gracefully shutdown.
         let mut fork = api.get_fork();
@@ -428,6 +497,28 @@ impl NodeArgs {
         .expect("Error setting Ctrl-C handler");
 
         Ok(handle.await??)
+    }
+}
+
+/// Maps a resolved profile back to the canonical network configuration persisted on the node.
+///
+/// The node config stores the network selection verbatim so setup, reset, execution, and
+/// trace projection consume the resolved profile without re-resolving.
+fn resolved_network_configs(profile: ResolvedNetworkProfile) -> NetworkConfigs {
+    if profile.is_tempo() {
+        NetworkConfigs::with_tempo()
+    } else if profile.is_celo() {
+        NetworkConfigs::with_celo()
+    } else {
+        #[cfg(feature = "hashkey")]
+        if profile.is_hashkey() {
+            return NetworkConfigs::with_hashkey();
+        }
+        if profile.is_optimism() {
+            NetworkConfigs::with_optimism()
+        } else {
+            NetworkConfigs::default()
+        }
     }
 }
 
@@ -865,6 +956,9 @@ fn duration_from_secs_f64(s: &str) -> Result<Duration, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use foundry_evm::opts::resolution::{
+        ForkIdentity, InMemoryForkIdentitySource, NetworkResolutionError, ResolvedEvmOpts,
+    };
     use std::{env, net::Ipv4Addr};
 
     #[test]
@@ -1073,5 +1167,168 @@ mod tests {
             let result = NodeArgs::try_parse_from(args);
             assert!(result.is_err(), "expected error when using {:?} without --fork-url", args[1]);
         }
+    }
+
+    fn resolve_for(
+        args: &NodeArgs,
+        identity: InMemoryForkIdentitySource,
+    ) -> Result<ResolvedEvmOpts, NetworkResolutionError> {
+        let evm_opts = EvmOpts {
+            fork_url: args.evm.fork_url.first().map(|f| f.url.clone()),
+            networks: args.evm.networks,
+            ..Default::default()
+        };
+        let intent = args.network_intent(args.evm.chain_id, args.init.as_ref());
+        CommandProfileResolution::with_fork_identity_source(identity)
+            .resolve_evm_opts(evm_opts, intent)
+    }
+
+    #[test]
+    fn standalone_configured_tempo_chain_is_profile_hint() {
+        let args = NodeArgs::parse_from(["anvil", "--chain-id", "42431"]);
+
+        let resolved =
+            resolve_for(&args, InMemoryForkIdentitySource::unavailable("must not be called"))
+                .unwrap();
+
+        assert_eq!(resolved.network_profile().name(), "tempo");
+    }
+
+    #[test]
+    fn standalone_configured_ethereum_chain_is_profile_hint() {
+        let args = NodeArgs::parse_from(["anvil", "--chain-id", "1"]);
+
+        let resolved =
+            resolve_for(&args, InMemoryForkIdentitySource::unavailable("must not be called"))
+                .unwrap();
+
+        assert_eq!(resolved.network_profile().name(), "ethereum");
+    }
+
+    #[test]
+    fn standalone_genesis_chain_is_profile_hint() {
+        let mut genesis = Genesis::default();
+        genesis.config.chain_id = 42431;
+        let mut args = NodeArgs::parse_from(["anvil"]);
+        args.init = Some(genesis);
+
+        let resolved =
+            resolve_for(&args, InMemoryForkIdentitySource::unavailable("must not be called"))
+                .unwrap();
+
+        assert_eq!(resolved.network_profile().name(), "tempo");
+    }
+
+    #[test]
+    fn standalone_no_chain_identity_resolves_ethereum() {
+        let args = NodeArgs::parse_from(["anvil"]);
+
+        let resolved =
+            resolve_for(&args, InMemoryForkIdentitySource::unavailable("must not be called"))
+                .unwrap();
+
+        assert_eq!(resolved.network_profile().name(), "ethereum");
+    }
+
+    #[tokio::test]
+    async fn standalone_hint_resolves_before_profile_aware_hardfork_parsing() {
+        // A known Tempo chain hint must drive Tempo hardfork parsing instead of the default
+        // Ethereum parser.
+        let args = NodeArgs::parse_from(["anvil", "--chain-id", "42431", "--hardfork", "T1"]);
+
+        let config = args.resolve_node_config().await.unwrap();
+
+        assert!(config.networks.is_tempo(), "chain hint must select the Tempo profile");
+        assert_eq!(
+            config.hardfork,
+            Some(TempoHardfork::from_str("T1").unwrap().into()),
+            "hardfork must parse against the resolved profile"
+        );
+    }
+
+    #[tokio::test]
+    async fn no_chain_identity_keeps_ethereum_hardfork_parsing() {
+        let args = NodeArgs::parse_from(["anvil", "--hardfork", "berlin"]);
+
+        let config = args.resolve_node_config().await.unwrap();
+
+        assert_eq!(config.hardfork, Some(EthereumHardfork::from_str("berlin").unwrap().into()));
+    }
+
+    #[test]
+    fn fork_chain_id_is_execution_override_not_profile_hint() {
+        // A known Tempo `--chain-id` with a fork URL must not select Tempo; the remote fork
+        // identity decides the profile.
+        let args = NodeArgs::parse_from([
+            "anvil",
+            "--fork-url",
+            "http://localhost:8545",
+            "--chain-id",
+            "42431",
+        ]);
+
+        let resolved =
+            resolve_for(&args, InMemoryForkIdentitySource::new(ForkIdentity::new(10))).unwrap();
+
+        assert_eq!(resolved.network_profile().name(), "optimism");
+    }
+
+    #[test]
+    fn fork_identity_selects_tempo_when_no_explicit_selection() {
+        let args = NodeArgs::parse_from([
+            "anvil",
+            "--fork-url",
+            "http://localhost:8545",
+            "--chain-id",
+            "31337",
+        ]);
+
+        let resolved =
+            resolve_for(&args, InMemoryForkIdentitySource::new(ForkIdentity::new(42431))).unwrap();
+
+        assert_eq!(resolved.network_profile().name(), "tempo");
+    }
+
+    #[test]
+    fn explicit_network_selection_skips_fork_identity() {
+        let args = NodeArgs::parse_from([
+            "anvil",
+            "--fork-url",
+            "http://localhost:8545",
+            "--chain-id",
+            "42431",
+            "--optimism",
+        ]);
+
+        let resolved =
+            resolve_for(&args, InMemoryForkIdentitySource::unavailable("must not be called"))
+                .unwrap();
+
+        assert_eq!(resolved.network_profile().name(), "optimism");
+    }
+
+    #[test]
+    fn resolved_network_configs_preserve_resolved_identity() {
+        assert_eq!(
+            resolved_network_configs(NetworkConfigs::default().resolve()),
+            NetworkConfigs::default()
+        );
+        assert_eq!(
+            resolved_network_configs(NetworkConfigs::with_tempo().resolve()),
+            NetworkConfigs::with_tempo()
+        );
+        assert_eq!(
+            resolved_network_configs(NetworkConfigs::with_celo().resolve()),
+            NetworkConfigs::with_celo()
+        );
+        assert_eq!(
+            resolved_network_configs(NetworkConfigs::with_optimism().resolve()),
+            NetworkConfigs::with_optimism()
+        );
+        #[cfg(feature = "hashkey")]
+        assert_eq!(
+            resolved_network_configs(NetworkConfigs::with_hashkey().resolve()),
+            NetworkConfigs::with_hashkey()
+        );
     }
 }
