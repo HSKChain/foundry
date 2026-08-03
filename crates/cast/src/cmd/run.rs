@@ -38,7 +38,9 @@ use foundry_evm::{
     hardforks::FoundryHardfork,
     opts::{
         EvmOpts,
-        resolution::{CommandProfileResolution, NetworkIntent, ResolvedEvmOpts},
+        resolution::{
+            CommandProfileResolution, NetworkIntent, ResolvedEvmOpts, RpcForkIdentitySource,
+        },
     },
     traces::{InternalTraceMode, TraceMode, Traces},
 };
@@ -142,31 +144,22 @@ impl RunArgs {
     /// Note: This executes the transaction(s) as is: Cheatcodes are disabled
     pub async fn run(self) -> Result<()> {
         let figment = self.rpc.clone().into_figment(self.with_local_artifacts).merge(&self);
-        let mut evm_opts = figment.extract::<EvmOpts>()?;
+        let evm_opts = figment.extract::<EvmOpts>()?;
 
-        // Auto-detect network from fork chain ID when not explicitly configured.
-        evm_opts.infer_network_from_fork().await;
-        let resolved = CommandProfileResolution::new()
-            .resolve_evm_opts(evm_opts.clone(), NetworkIntent::new())?;
+        // Replay inherits network semantics from the fork endpoint when not explicitly configured.
+        let fork_identity = RpcForkIdentitySource::from_evm_opts(&evm_opts);
+        let resolved = CommandProfileResolution::with_fork_identity_source(fork_identity)
+            .resolve_evm_opts_async(evm_opts, NetworkIntent::new().with_fork_identity())
+            .await?;
 
         match network_dispatch_kind(resolved.network_profile()) {
-            NetworkDispatchKind::Tempo => {
-                self.run_with_evm::<TempoEvmNetwork>(evm_opts, resolved).await
-            }
-            NetworkDispatchKind::Optimism => {
-                self.run_with_evm::<OpEvmNetwork>(evm_opts, resolved).await
-            }
-            NetworkDispatchKind::Ethereum => {
-                self.run_with_evm::<EthEvmNetwork>(evm_opts, resolved).await
-            }
+            NetworkDispatchKind::Tempo => self.run_with_evm::<TempoEvmNetwork>(resolved).await,
+            NetworkDispatchKind::Optimism => self.run_with_evm::<OpEvmNetwork>(resolved).await,
+            NetworkDispatchKind::Ethereum => self.run_with_evm::<EthEvmNetwork>(resolved).await,
         }
     }
 
-    async fn run_with_evm<FEN: FoundryEvmNetwork>(
-        self,
-        evm_opts: EvmOpts,
-        resolved: ResolvedEvmOpts,
-    ) -> Result<()> {
+    async fn run_with_evm<FEN: FoundryEvmNetwork>(self, resolved: ResolvedEvmOpts) -> Result<()> {
         let figment = self.rpc.clone().into_figment(self.with_local_artifacts).merge(&self);
         let mut config = Config::from_provider(figment)?.sanitized();
 
@@ -210,7 +203,7 @@ impl RunArgs {
         // we need to fork off the parent block
         config.fork_block_number = Some(tx_block_number - 1);
 
-        let create2_deployer = evm_opts.create2_deployer;
+        let create2_deployer = resolved.evm_opts().create2_deployer;
         let (block, (mut prepared, _)) = tokio::try_join!(
             // fetch the block the transaction was mined in
             provider.get_block(tx_block_number.into()).full().into_future().map_err(Into::into),

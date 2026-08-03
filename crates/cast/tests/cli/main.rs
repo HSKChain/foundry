@@ -9,6 +9,7 @@ use alloy_rpc_types::{Authorization, BlockNumberOrTag, Index, TransactionRequest
 use alloy_signer::Signer;
 use alloy_signer_local::PrivateKeySigner;
 use anvil::NodeConfig;
+use foundry_evm::core::tempo::PATH_USD_ADDRESS;
 use foundry_test_utils::{
     rpc::{
         next_etherscan_api_key, next_http_archive_rpc_url, next_http_rpc_endpoint,
@@ -5098,4 +5099,285 @@ casttest!(run_evm_version_updates_gas_params, |_prj, cmd| {
         sd_output.contains("Gas used: 177241"),
         "expected Spurious Dragon gas (177241), got: {sd_output}"
     );
+});
+
+// ============================================================================
+// Command profile resolution: cast call and cast run
+// ============================================================================
+
+// `cast call` maps Tempo transaction options to an exact Tempo requirement and skips fork
+// identity lookup.
+casttest!(cast_call_tempo_transaction_requires_tempo, async |_prj, cmd| {
+    let (_api, handle) = anvil::spawn(NodeConfig::test_tempo()).await;
+    let rpc = handle.http_endpoint();
+
+    cmd.cast_fuse()
+        .args([
+            "call",
+            &PATH_USD_ADDRESS.to_string(),
+            "balanceOf(address)(uint256)",
+            "0x0000000000000000000000000000000000000000",
+            "--tempo.fee-token",
+            &PATH_USD_ADDRESS.to_string(),
+            "--rpc-url",
+            &rpc,
+        ])
+        .assert_success()
+        .stdout_eq(str![[r#"
+0
+
+"#]]);
+});
+
+// `cast call` inherits Tempo semantics from the fork endpoint through shared fork identity
+// resolution when no explicit profile or requirement is configured.
+casttest!(cast_call_fork_identity_selects_tempo, async |_prj, cmd| {
+    let (_api, handle) = anvil::spawn(NodeConfig::test_tempo()).await;
+    let rpc = handle.http_endpoint();
+
+    cmd.cast_fuse()
+        .args([
+            "call",
+            &PATH_USD_ADDRESS.to_string(),
+            "balanceOf(address)(uint256)",
+            "0x0000000000000000000000000000000000000000",
+            "--rpc-url",
+            &rpc,
+        ])
+        .assert_success()
+        .stdout_eq(str![[r#"
+0
+
+"#]]);
+});
+
+// `cast call` tracing consumes the resolved Tempo carrier and decodes Tempo precompiles.
+casttest!(cast_call_fork_identity_tempo_trace, async |_prj, cmd| {
+    let (_api, handle) = anvil::spawn(NodeConfig::test_tempo()).await;
+    let rpc = handle.http_endpoint();
+
+    cmd.cast_fuse()
+        .args([
+            "call",
+            &PATH_USD_ADDRESS.to_string(),
+            "balanceOf(address)(uint256)",
+            "0x0000000000000000000000000000000000000000",
+            "--trace",
+            "--rpc-url",
+            &rpc,
+        ])
+        .assert_success()
+        .stdout_eq(str![[r#"
+Traces:
+  [..] PathUSD::balanceOf([..])
+    └─ ← [Return] 0
+
+
+Transaction successfully executed.
+[GAS]
+
+"#]]);
+});
+
+// A configured chain selection is an identity-bearing hint: a known Tempo chain selects Tempo
+// semantics without querying the endpoint.
+casttest!(cast_call_chain_hint_selects_tempo_fork, async |_prj, cmd| {
+    let (_api, handle) = anvil::spawn(NodeConfig::test_tempo()).await;
+    let rpc = handle.http_endpoint();
+
+    cmd.cast_fuse()
+        .args([
+            "call",
+            &PATH_USD_ADDRESS.to_string(),
+            "balanceOf(address)(uint256)",
+            "0x0000000000000000000000000000000000000000",
+            "--chain",
+            "42431",
+            "--trace",
+            "--rpc-url",
+            &rpc,
+        ])
+        .assert_success()
+        .stdout_eq(str![[r#"
+Traces:
+  [..] PathUSD::balanceOf([..])
+    └─ ← [Return] 0
+
+
+Transaction successfully executed.
+[GAS]
+
+"#]]);
+});
+
+// Successful text and JSON stdout remain unchanged across normal and verbose execution.
+casttest!(cast_call_stdout_stable_across_json_and_verbose, async |_prj, cmd| {
+    let (_api, handle) = anvil::spawn(NodeConfig::test_tempo()).await;
+    let rpc = handle.http_endpoint();
+    let args = [
+        "call",
+        &PATH_USD_ADDRESS.to_string(),
+        "balanceOf(address)(uint256)",
+        "0x0000000000000000000000000000000000000000",
+        "--rpc-url",
+        &rpc,
+    ];
+
+    cmd.cast_fuse().args(args).assert_success().stdout_eq(str![[r#"
+0
+
+"#]]);
+
+    cmd.cast_fuse().args(args).args(["-v"]).assert_success().stdout_eq(str![[r#"
+0
+
+"#]]);
+
+    cmd.cast_fuse().args(["--json"]).args(args).assert_json_stdout(str![[r#"
+[0]
+"#]]);
+
+    cmd.cast_fuse().args(["--json", "-v"]).args(args).assert_json_stdout(str![[r#"
+[0]
+"#]]);
+});
+
+// A Tempo transaction requirement conflicts with an explicit non-Tempo profile before any EVM
+// execution, with exact stderr, empty stdout, and failure status.
+casttest!(cast_call_tempo_requirement_conflicts_with_explicit_ethereum, |prj, cmd| {
+    prj.create_file(
+        "foundry.toml",
+        r#"
+[default]
+network = "ethereum"
+"#,
+    );
+    cmd.set_current_dir(prj.root());
+
+    cmd.cast_fuse()
+        .args([
+            "call",
+            "0x0000000000000000000000000000000000000000",
+            "--tempo.fee-token",
+            "0x0000000000000000000000000000000000000001",
+        ])
+        .assert_failure()
+        .stdout_eq(str![r#""#])
+        .stderr_eq(str![[r#"
+Error: network requirement `tempo` from `Tempo transaction` conflicts with configured network `ethereum`
+
+"#]]);
+});
+
+// A Tempo transaction requirement conflicts with an explicit HashKey profile before any EVM
+// execution.
+#[cfg(feature = "hashkey")]
+casttest!(cast_call_tempo_requirement_conflicts_with_explicit_hashkey, |prj, cmd| {
+    prj.create_file(
+        "foundry.toml",
+        r#"
+[default]
+network = "hashkey"
+"#,
+    );
+    cmd.set_current_dir(prj.root());
+
+    cmd.cast_fuse()
+        .args([
+            "call",
+            "0x0000000000000000000000000000000000000000",
+            "--tempo.fee-token",
+            "0x0000000000000000000000000000000000000001",
+        ])
+        .assert_failure()
+        .stdout_eq(str![r#""#])
+        .stderr_eq(str![[r#"
+Error: network requirement `tempo` from `Tempo transaction` conflicts with configured network `hashkey`
+
+"#]]);
+});
+
+// A required fork identity transport failure stops `cast call` before EVM execution with empty
+// stdout and a stable stderr error.
+casttest!(cast_call_fork_identity_unavailable_fails, |_prj, cmd| {
+    cmd.cast_fuse()
+        .args([
+            "call",
+            "0x0000000000000000000000000000000000000000",
+            "--rpc-url",
+            "http://127.0.0.1:1",
+        ])
+        .assert_failure()
+        .stdout_eq(str![r#""#])
+        .stderr_eq(str![[r#"
+Error: failed to resolve network profile from fork identity: fork identity transport unavailable: eth_chainId request failed
+
+"#]]);
+});
+
+// `cast run` replays through shared fork identity resolution and inherits Tempo semantics.
+casttest!(cast_run_reuses_fork_identity_for_tempo_replay, async |_prj, cmd| {
+    let (_api, handle) = anvil::spawn(NodeConfig::test_tempo()).await;
+    let rpc = handle.http_endpoint();
+    let recipient = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8";
+
+    let tx_hash = cmd
+        .cast_fuse()
+        .args([
+            "send",
+            &PATH_USD_ADDRESS.to_string(),
+            "transfer(address,uint256)",
+            recipient,
+            "1000000",
+            "--private-key",
+            "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
+            "--rpc-url",
+            &rpc,
+            "--async",
+        ])
+        .assert_success()
+        .get_output()
+        .stdout_lossy();
+    let tx_hash = tx_hash.trim().parse::<B256>().unwrap().to_string();
+
+    let expected = str![[r#"
+Executing previous transactions from the block.
+Traces:
+  [..] PathUSD::transfer([..])
+    ├─ emit Transfer(from: 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266, to: 0x70997970C51812dc3A010C7d01b50e0d17dc79C8, amount: 1000000 [1e6])
+    └─ ← [Return] true
+
+
+Transaction successfully executed.
+[GAS]
+
+"#]];
+
+    cmd.cast_fuse()
+        .args(["run", &tx_hash, "--rpc-url", &rpc])
+        .assert_success()
+        .stdout_eq(expected.clone());
+
+    cmd.cast_fuse()
+        .args(["run", "-v", &tx_hash, "--rpc-url", &rpc])
+        .assert_success()
+        .stdout_eq(expected);
+});
+
+// A required fork identity transport failure stops `cast run` before replay with empty stdout
+// and a stable stderr error.
+casttest!(cast_run_fork_identity_unavailable_fails, |_prj, cmd| {
+    cmd.cast_fuse()
+        .args([
+            "run",
+            "0x0000000000000000000000000000000000000000000000000000000000000001",
+            "--rpc-url",
+            "http://127.0.0.1:1",
+        ])
+        .assert_failure()
+        .stdout_eq(str![r#""#])
+        .stderr_eq(str![[r#"
+Error: failed to resolve network profile from fork identity: fork identity transport unavailable: eth_chainId request failed
+
+"#]]);
 });
