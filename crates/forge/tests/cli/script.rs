@@ -71,6 +71,66 @@ Error: network requirement `tempo` from `--tempo.fee-token` conflicts with confi
 "#]]);
 });
 
+// `--quiet` must not hide a resolution failure: the error stays on stderr and stdout stays
+// empty, exactly as in the normal failure case.
+#[cfg(feature = "hashkey")]
+forgetest!(tempo_fee_token_conflict_quiet_keeps_stderr, |prj, cmd| {
+    let script = prj.add_source(
+        "FeeTokenScript",
+        r#"
+contract FeeTokenScript {
+    function run() external {}
+}
+"#,
+    );
+
+    cmd.args([
+        "script",
+        script.to_str().unwrap(),
+        "--network",
+        "hashkey",
+        "--tempo.fee-token",
+        "0x0000000000000000000000000000000000000001",
+        "--quiet",
+    ])
+    .assert_failure()
+    .stdout_eq(str![r#""#])
+    .stderr_eq(str![[r#"
+Error: network requirement `tempo` from `--tempo.fee-token` conflicts with configured network `hashkey`
+
+"#]]);
+});
+
+// Verbosity must not change resolution failure output: `-vv` keeps the exact stderr text and
+// empty stdout of the normal failure case.
+#[cfg(feature = "hashkey")]
+forgetest!(tempo_fee_token_conflict_verbose_keeps_stderr, |prj, cmd| {
+    let script = prj.add_source(
+        "FeeTokenScript",
+        r#"
+contract FeeTokenScript {
+    function run() external {}
+}
+"#,
+    );
+
+    cmd.args([
+        "script",
+        script.to_str().unwrap(),
+        "--network",
+        "hashkey",
+        "--tempo.fee-token",
+        "0x0000000000000000000000000000000000000001",
+        "-vv",
+    ])
+    .assert_failure()
+    .stdout_eq(str![r#""#])
+    .stderr_eq(str![[r#"
+Error: network requirement `tempo` from `--tempo.fee-token` conflicts with configured network `hashkey`
+
+"#]]);
+});
+
 // Tests that fork cheat codes can be used in script
 forgetest_init!(
     #[ignore]
