@@ -1,7 +1,10 @@
 //! Canonical command-owned network profile resolution.
 
 use super::EvmOpts;
+use alloy_network::AnyNetwork;
 use alloy_primitives::ChainId;
+use alloy_provider::{Provider, RootProvider};
+use alloy_rpc_types::anvil::NodeInfo;
 use foundry_evm_networks::{EvmFamily, NetworkConfigs, NetworkVariant, ResolvedNetworkProfile};
 use std::fmt;
 use thiserror::Error;
@@ -220,10 +223,85 @@ pub enum NetworkResolutionError {
     },
 }
 
-/// A fork identity source used by the resolver.
+/// A fork identity source used by the synchronous resolver.
 pub trait ForkIdentitySource {
     /// Returns fork identity, or a typed transport error.
     fn resolve(&mut self) -> Result<Option<ForkIdentity>, ForkIdentityError>;
+}
+
+/// An asynchronous fork identity source used by production RPC adapters.
+pub trait AsyncForkIdentitySource {
+    /// Returns fork identity, or a typed transport error.
+    async fn resolve(&mut self) -> Result<Option<ForkIdentity>, ForkIdentityError>;
+}
+
+/// A production JSON-RPC adapter for fork identity resolution.
+///
+/// The provider is constructed from the fork options, but no request is made until the resolver
+/// determines that fork identity is required. Provider construction and transport errors are
+/// converted to stable messages so credentials, headers, and provider internals cannot escape in
+/// user-facing diagnostics.
+pub struct RpcForkIdentitySource {
+    provider: Option<RootProvider<AnyNetwork>>,
+    initialization_error: Option<ForkIdentityError>,
+}
+
+impl RpcForkIdentitySource {
+    /// Creates an adapter from fork options without making an RPC request.
+    pub fn from_evm_opts(evm_opts: &EvmOpts) -> Self {
+        let Some(url) = evm_opts.fork_url.as_deref() else {
+            return Self { provider: None, initialization_error: None };
+        };
+
+        match evm_opts.fork_provider_with_url::<AnyNetwork>(url) {
+            Ok(provider) => Self { provider: Some(provider), initialization_error: None },
+            Err(_) => Self {
+                provider: None,
+                initialization_error: Some(ForkIdentityError::Unavailable(
+                    "failed to create fork identity provider".to_string(),
+                )),
+            },
+        }
+    }
+
+    /// Creates an adapter around an already-configured provider.
+    pub const fn from_provider(provider: RootProvider<AnyNetwork>) -> Self {
+        Self { provider: Some(provider), initialization_error: None }
+    }
+}
+
+impl fmt::Debug for RpcForkIdentitySource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RpcForkIdentitySource").finish_non_exhaustive()
+    }
+}
+
+impl AsyncForkIdentitySource for RpcForkIdentitySource {
+    async fn resolve(&mut self) -> Result<Option<ForkIdentity>, ForkIdentityError> {
+        if let Some(error) = &self.initialization_error {
+            return Err(error.clone());
+        }
+
+        let Some(provider) = &self.provider else {
+            return Err(ForkIdentityError::Unavailable("fork URL is not configured".to_string()));
+        };
+
+        let chain_id = provider.get_chain_id().await.map_err(|_| {
+            ForkIdentityError::Unavailable("eth_chainId request failed".to_string())
+        })?;
+
+        let node_network = if chain_id == 31337 {
+            provider
+                .raw_request::<_, NodeInfo>("anvil_nodeInfo".into(), ())
+                .await
+                .ok()
+                .and_then(|info| info.network)
+        } else {
+            None
+        };
+
+        Ok(Some(ForkIdentity { chain_id, node_network }))
+    }
 }
 
 /// A source used when no fork identity lookup is configured.
@@ -272,6 +350,16 @@ impl InMemoryForkIdentitySource {
 
 impl ForkIdentitySource for InMemoryForkIdentitySource {
     fn resolve(&mut self) -> Result<Option<ForkIdentity>, ForkIdentityError> {
+        self.calls += 1;
+        if let Some(error) = &self.error {
+            return Err(error.clone());
+        }
+        Ok(self.identity.clone())
+    }
+}
+
+impl AsyncForkIdentitySource for InMemoryForkIdentitySource {
+    async fn resolve(&mut self) -> Result<Option<ForkIdentity>, ForkIdentityError> {
         self.calls += 1;
         if let Some(error) = &self.error {
             return Err(error.clone());
@@ -332,62 +420,105 @@ impl<S: ForkIdentitySource> CommandProfileResolution<S> {
         evm_opts: EvmOpts,
         intent: NetworkIntent,
     ) -> Result<ResolvedEvmOpts, NetworkResolutionError> {
-        let configured = evm_opts.networks;
-        let mut selected = configured.has_explicit_selection().then_some(configured.resolve());
+        let identity = if should_resolve_fork_identity(&evm_opts, &intent) {
+            Some(
+                self.fork_identity
+                    .resolve()
+                    .map_err(|source| NetworkResolutionError::ForkIdentityUnavailable { source })?,
+            )
+        } else {
+            None
+        };
+        resolve_evm_opts_with_identity(evm_opts, intent, identity.flatten())
+    }
+}
 
-        for requirement in &intent.exact_profiles {
-            if let Some(profile) = selected {
-                if !requirement.profile.matches(profile) {
-                    return Err(NetworkResolutionError::ConflictingRequirement {
-                        configured: profile.name(),
-                        required: requirement.profile.name(),
-                        requirement_source: requirement.source,
-                    });
-                }
-            } else {
-                selected = Some(requirement.profile.configs().resolve());
-            }
-        }
+impl<S: AsyncForkIdentitySource> CommandProfileResolution<S> {
+    /// Resolves one command's normalized intent using an asynchronous identity source.
+    pub async fn resolve_evm_opts_async(
+        &mut self,
+        evm_opts: EvmOpts,
+        intent: NetworkIntent,
+    ) -> Result<ResolvedEvmOpts, NetworkResolutionError> {
+        let identity = if should_resolve_fork_identity(&evm_opts, &intent) {
+            Some(
+                self.fork_identity
+                    .resolve()
+                    .await
+                    .map_err(|source| NetworkResolutionError::ForkIdentityUnavailable { source })?,
+            )
+        } else {
+            None
+        };
+        resolve_evm_opts_with_identity(evm_opts, intent, identity.flatten())
+    }
+}
 
-        if selected.is_none()
-            && let Some(chain_id) = intent.chain_hint
-            && let Some(configs) = NetworkConfigs::from_known_chain_id(chain_id)
-        {
-            selected = Some(configs.resolve());
-        }
+fn should_resolve_fork_identity(evm_opts: &EvmOpts, intent: &NetworkIntent) -> bool {
+    let mut selected = evm_opts.networks.has_explicit_selection();
+    selected |= !intent.exact_profiles.is_empty();
+    selected |= intent
+        .chain_hint
+        .is_some_and(|chain_id| NetworkConfigs::from_known_chain_id(chain_id).is_some());
 
-        let fork_identity_requested = intent.fork_identity_requested || evm_opts.fork_url.is_some();
-        if selected.is_none() && fork_identity_requested {
-            let identity = self
-                .fork_identity
-                .resolve()
-                .map_err(|source| NetworkResolutionError::ForkIdentityUnavailable { source })?;
-            if let Some(identity) = identity {
-                selected = fork_profile(identity);
-            }
-        }
+    !selected && (intent.fork_identity_requested || evm_opts.fork_url.is_some())
+}
 
-        let network_profile = selected
-            .or_else(|| {
-                intent
-                    .family_constraints
-                    .first()
-                    .map(|constraint| family_configs(constraint.family).resolve())
-            })
-            .unwrap_or_default();
+fn resolve_evm_opts_with_identity(
+    evm_opts: EvmOpts,
+    intent: NetworkIntent,
+    identity: Option<ForkIdentity>,
+) -> Result<ResolvedEvmOpts, NetworkResolutionError> {
+    let configured = evm_opts.networks;
+    let mut selected = configured.has_explicit_selection().then_some(configured.resolve());
 
-        for constraint in &intent.family_constraints {
-            if network_profile.evm_family() != constraint.family {
-                return Err(NetworkResolutionError::ConflictingEvmFamily {
-                    selected: network_profile.name(),
-                    required: constraint.family.name(),
-                    requirement_source: constraint.source,
+    for requirement in &intent.exact_profiles {
+        if let Some(profile) = selected {
+            if !requirement.profile.matches(profile) {
+                return Err(NetworkResolutionError::ConflictingRequirement {
+                    configured: profile.name(),
+                    required: requirement.profile.name(),
+                    requirement_source: requirement.source,
                 });
             }
+        } else {
+            selected = Some(requirement.profile.configs().resolve());
         }
-
-        Ok(ResolvedEvmOpts { evm_opts, network_profile })
     }
+
+    if selected.is_none()
+        && let Some(chain_id) = intent.chain_hint
+        && let Some(configs) = NetworkConfigs::from_known_chain_id(chain_id)
+    {
+        selected = Some(configs.resolve());
+    }
+
+    if selected.is_none()
+        && let Some(identity) = identity
+    {
+        selected = fork_profile(identity);
+    }
+
+    let network_profile = selected
+        .or_else(|| {
+            intent
+                .family_constraints
+                .first()
+                .map(|constraint| family_configs(constraint.family).resolve())
+        })
+        .unwrap_or_default();
+
+    for constraint in &intent.family_constraints {
+        if network_profile.evm_family() != constraint.family {
+            return Err(NetworkResolutionError::ConflictingEvmFamily {
+                selected: network_profile.name(),
+                required: constraint.family.name(),
+                requirement_source: constraint.source,
+            });
+        }
+    }
+
+    Ok(ResolvedEvmOpts { evm_opts, network_profile })
 }
 
 fn family_configs(family: EvmFamily) -> NetworkConfigs {
@@ -411,6 +542,8 @@ fn fork_profile(identity: ForkIdentity) -> Option<ResolvedNetworkProfile> {
 mod tests {
     use super::*;
     use alloy_primitives::U256;
+    use alloy_rpc_client::RpcClient;
+    use alloy_transport::mock::Asserter;
 
     fn opts() -> EvmOpts {
         EvmOpts::default()
@@ -726,5 +859,58 @@ mod tests {
 
         assert!(resolved.has_fork());
         assert_eq!(resolved.network_profile().name(), "ethereum");
+    }
+
+    #[tokio::test]
+    async fn rpc_adapter_reads_tempo_anvil_marker() {
+        let (_api, handle) = anvil::spawn(anvil::NodeConfig::test_tempo()).await;
+        let mut evm_opts = opts();
+        evm_opts.fork_url = Some(handle.http_endpoint());
+        let source = RpcForkIdentitySource::from_evm_opts(&evm_opts);
+        let mut resolution = CommandProfileResolution::with_fork_identity_source(source);
+
+        let resolved =
+            resolution.resolve_evm_opts_async(evm_opts, NetworkIntent::new()).await.unwrap();
+
+        assert_eq!(resolved.network_profile().name(), "tempo");
+    }
+
+    #[tokio::test]
+    async fn rpc_adapter_treats_unsupported_node_info_as_non_fatal() {
+        let asserter = Asserter::new();
+        asserter.push_success(&"0x7a69");
+        let source =
+            RpcForkIdentitySource::from_provider(RootProvider::new(RpcClient::mocked(asserter)));
+        let mut resolution = CommandProfileResolution::with_fork_identity_source(source);
+
+        let resolved = resolution
+            .resolve_evm_opts_async(opts(), NetworkIntent::new().with_fork_identity())
+            .await
+            .unwrap();
+
+        assert_eq!(resolved.network_profile().name(), "ethereum");
+    }
+
+    #[tokio::test]
+    async fn rpc_adapter_returns_redacted_chain_id_failure() {
+        let asserter = Asserter::new();
+        asserter.push_failure_msg("provider token=super-secret");
+        let source =
+            RpcForkIdentitySource::from_provider(RootProvider::new(RpcClient::mocked(asserter)));
+        let mut resolution = CommandProfileResolution::with_fork_identity_source(source);
+
+        let error = resolution
+            .resolve_evm_opts_async(opts(), NetworkIntent::new().with_fork_identity())
+            .await
+            .unwrap_err();
+
+        let error_text = error.to_string();
+        assert!(matches!(
+            error,
+            NetworkResolutionError::ForkIdentityUnavailable {
+                source: ForkIdentityError::Unavailable(message),
+            } if message == "eth_chainId request failed"
+        ));
+        assert!(!error_text.contains("super-secret"));
     }
 }

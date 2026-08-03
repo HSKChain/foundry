@@ -591,19 +591,6 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn flaky_infer_network_tempo_moderato_rpc() {
-        let config = Config::figment();
-        let mut evm_opts = config.extract::<EvmOpts>().unwrap();
-        evm_opts.fork_url = Some("https://rpc.moderato.tempo.xyz".to_string());
-        assert_eq!(evm_opts.networks, NetworkConfigs::default());
-
-        evm_opts.infer_network_from_fork().await;
-
-        // Tempo Moderato has a known Tempo chain ID -> should be inferred via with_chain_id.
-        assert!(evm_opts.networks.is_tempo(), "should detect tempo from Moderato chain ID");
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
     async fn get_fork_pins_block_number_from_env() {
         let endpoint = foundry_test_utils::rpc::next_http_rpc_endpoint();
 
