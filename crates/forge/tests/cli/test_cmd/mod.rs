@@ -115,6 +115,45 @@ forgetest!(can_set_filter_values, |prj, cmd| {
     assert_eq!(config.coverage_pattern_inverse, None);
 });
 
+forgetest_async!(fork_identity_selects_tempo_execution, |prj, cmd| {
+    let (_api, handle) = spawn(NodeConfig::test_tempo()).await;
+    let fork_url = handle.http_endpoint();
+
+    prj.add_source(
+        "Basic.t.sol",
+        r#"
+pragma solidity ^0.8.20;
+contract BasicTest {
+    function test_ok() public {}
+}
+"#,
+    );
+
+    cmd.args(["test", "--fork-url", &fork_url, "--quiet"]).assert_success();
+});
+
+forgetest!(fork_identity_unavailable_fails, |prj, cmd| {
+    prj.add_source(
+        "Basic.t.sol",
+        r#"
+pragma solidity ^0.8.20;
+contract BasicTest {
+    function test_ok() public {}
+}
+"#,
+    );
+
+    cmd.args(["build", "--quiet"]).assert_success();
+    cmd.forge_fuse()
+        .args(["test", "--fork-url", "http://127.0.0.1:1", "--quiet"])
+        .assert_failure()
+        .stdout_eq(str![r#""#])
+        .stderr_eq(str![[r#"
+Error: failed to resolve network profile from fork identity: fork identity transport unavailable: eth_chainId request failed
+
+"#]]);
+});
+
 fn dummy_test_filter(cmd: &mut TestCommand) {
     cmd.args(["test", "--match-test", "testA.*", "--no-match-test", "testB.*"]);
     cmd.args(["--match-contract", "TestC.*", "--no-match-contract", "TestD.*"]);

@@ -44,7 +44,9 @@ use foundry_evm::{
     core::evm::{EthEvmNetwork, FoundryEvmNetwork, OpEvmNetwork, TempoEvmNetwork},
     opts::{
         EvmOpts,
-        resolution::{CommandProfileResolution, NetworkIntent, ResolvedEvmOpts},
+        resolution::{
+            CommandProfileResolution, NetworkIntent, ResolvedEvmOpts, RpcForkIdentitySource,
+        },
     },
     traces::{backtrace::BacktraceBuilder, identifier::TraceIdentifiers, prune_trace_depth},
 };
@@ -357,10 +359,11 @@ impl TestArgs {
             InternalTraceMode::None
         };
 
-        // Auto-detect network from fork chain ID when not explicitly configured.
-        evm_opts.infer_network_from_fork().await;
-        let resolved = CommandProfileResolution::new()
-            .resolve_evm_opts(evm_opts.clone(), NetworkIntent::new())?;
+        let fork_identity = RpcForkIdentitySource::from_evm_opts(&evm_opts);
+        let mut resolution = CommandProfileResolution::with_fork_identity_source(fork_identity);
+        let resolved = resolution
+            .resolve_evm_opts_async(evm_opts.clone(), NetworkIntent::new().with_fork_identity())
+            .await?;
 
         // Dispatch based on network type.
         let (libraries, mut outcome) = match network_dispatch_kind(resolved.network_profile()) {
