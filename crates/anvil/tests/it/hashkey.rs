@@ -2,7 +2,7 @@
 
 #[cfg(feature = "cli")]
 use std::{
-    io::Read,
+    fs::{self, OpenOptions},
     net::TcpListener,
     path::PathBuf,
     process::{Child, Command, Stdio},
@@ -184,6 +184,13 @@ async fn hashkey_cli_prints_profile_aware_b20_traces() {
     drop(listener);
     let port_arg = port.to_string();
 
+    // Redirect the child stdout to a file: file writes survive a kill, so the trace can be
+    // synchronized on deterministically instead of racing a fixed delay against the pipe. The
+    // profile-aware trace is printed on stdout; interleaving stderr into the same file could
+    // split trace lines, so stderr is discarded.
+    let trace_log = std::env::temp_dir().join(format!("anvil-hashkey-trace-{port}.log"));
+    let stdout_file = OpenOptions::new().create(true).append(true).open(&trace_log).unwrap();
+
     let mut child = ChildGuard(
         Command::new(anvil_binary())
             .args([
@@ -196,8 +203,8 @@ async fn hashkey_cli_prints_profile_aware_b20_traces() {
                 "--print-traces",
             ])
             .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stdout(Stdio::from(stdout_file))
+            .stderr(Stdio::null())
             .spawn()
             .expect("spawn anvil --network hashkey --print-traces"),
     );
@@ -221,18 +228,52 @@ async fn hashkey_cli_prints_profile_aware_b20_traces() {
         .to(factory)
         .with_input(IB20Factory::isB20Call { token: Address::repeat_byte(0x11) }.abi_encode());
     provider.call(tx.into()).await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Synchronize on the trace output instead of sleeping: the trace may not have reached the
+    // pipe when the child is killed, which made a fixed delay flaky. Poll the log until the
+    // complete trace appears, then shut the node down. The trace printer emits ANSI styles even
+    // when redirected, so styles are stripped before matching.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let mut output = strip_ansi(&fs::read_to_string(&trace_log).unwrap_or_default());
+    while !output.contains("← [Return] false") {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "anvil did not print the B20 trace; log={output:?}",
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        output = strip_ansi(&fs::read_to_string(&trace_log).unwrap_or_default());
+    }
 
     child.0.kill().unwrap();
     child.0.wait().unwrap();
-    let mut output = String::new();
-    child.0.stdout.take().unwrap().read_to_string(&mut output).unwrap();
-    child.0.stderr.take().unwrap().read_to_string(&mut output).unwrap();
-    let trace = output[output.find("Traces=\n").expect("Anvil printed the trace")..].trim_end();
+    // Re-read after shutdown to capture any remaining output.
+    output = strip_ansi(&fs::read_to_string(&trace_log).unwrap_or_default());
+    let trace = output[output.find("Traces=\n").expect("anvil printed the trace")..].trim_end();
+    let _ = fs::remove_file(&trace_log);
     assert_eq!(
         trace,
         r#"Traces=
   [12] B20Factory::isB20(0x1111111111111111111111111111111111111111)
     └─ ← [Return] false"#
     );
+}
+
+/// Removes ANSI escape sequences (SGR parameter sequences) from the given text.
+#[cfg(feature = "cli")]
+fn strip_ansi(text: &str) -> String {
+    let mut stripped = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' && chars.peek() == Some(&'[') {
+            chars.next();
+            for code in chars.by_ref() {
+                if code.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            stripped.push(c);
+        }
+    }
+    stripped
 }

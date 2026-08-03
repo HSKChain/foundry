@@ -31,7 +31,7 @@ fork identity:
 ```rust
 impl NetworkConfigs {
     pub fn from_known_chain_id(chain_id: u64) -> Option<Self> {
-        // Return `Some(configs)` for your known chain identity
+        // Returns `Some(configs)` for your known chain identity.
     }
 }
 ```
