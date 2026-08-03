@@ -36,7 +36,10 @@ use foundry_evm::{
     },
     executors::{EvmError, Executor, TracingExecutor},
     hardforks::FoundryHardfork,
-    opts::EvmOpts,
+    opts::{
+        EvmOpts,
+        resolution::{CommandProfileResolution, NetworkIntent, ResolvedEvmOpts},
+    },
     traces::{InternalTraceMode, TraceMode, Traces},
 };
 use foundry_evm_networks::{NetworkConfigs, ResolvedNetworkProfile};
@@ -143,17 +146,18 @@ impl RunArgs {
 
         // Auto-detect network from fork chain ID when not explicitly configured.
         evm_opts.infer_network_from_fork().await;
-        let network_profile = evm_opts.networks.resolve();
+        let resolved = CommandProfileResolution::new()
+            .resolve_evm_opts(evm_opts.clone(), NetworkIntent::new())?;
 
-        match network_dispatch_kind(network_profile) {
+        match network_dispatch_kind(resolved.network_profile()) {
             NetworkDispatchKind::Tempo => {
-                self.run_with_evm::<TempoEvmNetwork>(evm_opts, network_profile).await
+                self.run_with_evm::<TempoEvmNetwork>(evm_opts, resolved).await
             }
             NetworkDispatchKind::Optimism => {
-                self.run_with_evm::<OpEvmNetwork>(evm_opts, network_profile).await
+                self.run_with_evm::<OpEvmNetwork>(evm_opts, resolved).await
             }
             NetworkDispatchKind::Ethereum => {
-                self.run_with_evm::<EthEvmNetwork>(evm_opts, network_profile).await
+                self.run_with_evm::<EthEvmNetwork>(evm_opts, resolved).await
             }
         }
     }
@@ -161,7 +165,7 @@ impl RunArgs {
     async fn run_with_evm<FEN: FoundryEvmNetwork>(
         self,
         evm_opts: EvmOpts,
-        network_profile: ResolvedNetworkProfile,
+        resolved: ResolvedEvmOpts,
     ) -> Result<()> {
         let figment = self.rpc.clone().into_figment(self.with_local_artifacts).merge(&self);
         let mut config = Config::from_provider(figment)?.sanitized();
@@ -210,7 +214,7 @@ impl RunArgs {
         let (block, (mut prepared, _)) = tokio::try_join!(
             // fetch the block the transaction was mined in
             provider.get_block(tx_block_number.into()).full().into_future().map_err(Into::into),
-            TracingExecutor::<FEN>::prepare(&mut config, evm_opts, network_profile,)
+            TracingExecutor::<FEN>::prepare(&mut config, resolved.clone())
         )?;
 
         let mut evm_version = self.evm_version;
@@ -246,7 +250,7 @@ impl RunArgs {
                 apply_chain_and_block_specific_env_changes::<FEN::Network, _, _>(
                     evm_env,
                     block,
-                    network_profile,
+                    resolved.network_profile(),
                 );
             }
         });

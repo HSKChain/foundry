@@ -39,10 +39,13 @@ use foundry_evm::{
         evm::{EthEvmNetwork, FoundryEvmNetwork, OpEvmNetwork, TempoEvmNetwork},
     },
     executors::TracingExecutor,
-    opts::EvmOpts,
+    opts::{
+        EvmOpts,
+        resolution::{CommandProfileResolution, NetworkIntent, ResolvedEvmOpts},
+    },
     traces::{InternalTraceMode, TraceMode},
 };
-use foundry_evm_networks::{NetworkConfigs, ResolvedNetworkProfile};
+use foundry_evm_networks::NetworkConfigs;
 use foundry_wallets::WalletOpts;
 use regex::Regex;
 use std::{str::FromStr, sync::LazyLock};
@@ -230,17 +233,18 @@ impl CallArgs {
             evm_opts.networks = evm_opts.networks.with_chain_id(chain.id());
         }
         evm_opts.infer_network_from_fork().await;
-        let network_profile = evm_opts.networks.resolve();
+        let resolved = CommandProfileResolution::new()
+            .resolve_evm_opts(evm_opts.clone(), NetworkIntent::new())?;
 
-        match network_dispatch_kind(network_profile) {
+        match network_dispatch_kind(resolved.network_profile()) {
             NetworkDispatchKind::Tempo => {
-                self.run_with_network::<TempoEvmNetwork>(evm_opts, network_profile).await
+                self.run_with_network::<TempoEvmNetwork>(evm_opts, resolved).await
             }
             NetworkDispatchKind::Optimism => {
-                self.run_with_network::<OpEvmNetwork>(evm_opts, network_profile).await
+                self.run_with_network::<OpEvmNetwork>(evm_opts, resolved).await
             }
             NetworkDispatchKind::Ethereum => {
-                self.run_with_network::<EthEvmNetwork>(evm_opts, network_profile).await
+                self.run_with_network::<EthEvmNetwork>(evm_opts, resolved).await
             }
         }
     }
@@ -248,7 +252,7 @@ impl CallArgs {
     pub async fn run_with_network<FEN: FoundryEvmNetwork>(
         self,
         evm_opts: EvmOpts,
-        network_profile: ResolvedNetworkProfile,
+        resolved: ResolvedEvmOpts,
     ) -> Result<()>
     where
         <FEN::Network as Network>::TransactionRequest: FoundryTransactionBuilder<FEN::Network>,
@@ -319,8 +323,7 @@ impl CallArgs {
             }
 
             let create2_deployer = evm_opts.create2_deployer;
-            let (mut prepared, _) =
-                TracingExecutor::<FEN>::prepare(&mut config, evm_opts, network_profile).await?;
+            let (mut prepared, _) = TracingExecutor::<FEN>::prepare(&mut config, resolved).await?;
             prepared.configure_env(|evm_env, _| {
                 // modify settings that usually set in eth_call
                 evm_env.cfg_env.disable_block_gas_limit = true;

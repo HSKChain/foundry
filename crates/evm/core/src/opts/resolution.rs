@@ -385,6 +385,33 @@ impl ResolvedEvmOpts {
     pub const fn has_fork(&self) -> bool {
         self.evm_opts.fork_url.is_some()
     }
+
+    /// Returns the read-only options projection used by construction and consumer adapters.
+    #[doc(hidden)]
+    pub const fn evm_opts(&self) -> &EvmOpts {
+        &self.evm_opts
+    }
+
+    /// Updates the fork endpoint without changing the resolved network profile.
+    #[doc(hidden)]
+    pub fn with_fork_url(mut self, fork_url: String) -> Self {
+        self.evm_opts.fork_url = Some(fork_url);
+        self
+    }
+
+    /// Updates the pinned fork block without changing the resolved network profile.
+    #[doc(hidden)]
+    pub const fn with_fork_block_number(mut self, fork_block_number: Option<u64>) -> Self {
+        self.evm_opts.fork_block_number = fork_block_number;
+        self
+    }
+
+    /// Updates the transaction sender without changing the resolved network profile.
+    #[doc(hidden)]
+    pub const fn with_sender(mut self, sender: alloy_primitives::Address) -> Self {
+        self.evm_opts.sender = sender;
+        self
+    }
 }
 
 /// Canonical command profile resolver.

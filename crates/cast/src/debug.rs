@@ -124,7 +124,10 @@ mod tests {
     use foundry_evm::{
         construction::EvmConstruction,
         core::evm::OpEvmNetwork,
-        opts::EvmOpts,
+        opts::{
+            EvmOpts,
+            resolution::{CommandProfileResolution, NetworkIntent},
+        },
         traces::{
             CallTrace, CallTraceArena, CallTraceNode, SparsedTraceArena, TraceKind, TraceMode,
         },
@@ -157,13 +160,14 @@ mod tests {
         };
         let mut traces =
             vec![(TraceKind::Execution, SparsedTraceArena { arena, ignored: Default::default() })];
-        let profile = NetworkConfigs::with_hashkey().resolve();
         let mut evm_opts = EvmOpts::default();
         evm_opts.env.chain_id = Some(177);
+        evm_opts.networks = NetworkConfigs::with_hashkey();
+        let resolved = CommandProfileResolution::new()
+            .resolve_evm_opts(evm_opts, NetworkIntent::new())
+            .unwrap();
         let prepared =
-            EvmConstruction::prepare::<OpEvmNetwork>(&evm_opts, &Config::default(), profile)
-                .await
-                .unwrap();
+            EvmConstruction::prepare::<OpEvmNetwork>(&resolved, &Config::default()).await.unwrap();
         let executor =
             TracingExecutor::new(prepared, None, TraceMode::Call, Address::ZERO, None).unwrap();
         let decoder = executor.trace_decoder(DecoderConfig::default());

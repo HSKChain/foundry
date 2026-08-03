@@ -22,7 +22,7 @@ use foundry_evm::{
         evm::{BlockEnvFor, BlockResponseFor, EvmEnvFor, FoundryEvmNetwork, SpecFor, TxEnvFor},
     },
     executors::TracingExecutor,
-    opts::EvmOpts,
+    opts::{EvmOpts, resolution::ResolvedEvmOpts},
     utils::{apply_chain_and_block_specific_env_changes, block_env_from_header},
 };
 use foundry_evm_networks::ResolvedNetworkProfile;
@@ -268,14 +268,13 @@ pub async fn get_tracing_preparation<FEN: FoundryEvmNetwork>(
     fork_blk_num: u64,
     evm_version: EvmVersion,
     evm_opts: EvmOpts,
-    network_profile: ResolvedNetworkProfile,
+    resolved: ResolvedEvmOpts,
 ) -> Result<(PreparedEvm<FEN>, Address)> {
     fork_config.fork_block_number = Some(fork_blk_num);
     fork_config.evm_version = evm_version;
 
     let create2_deployer = evm_opts.create2_deployer;
-    let (prepared, _) =
-        TracingExecutor::<FEN>::prepare(fork_config, evm_opts, network_profile).await?;
+    let (prepared, _) = TracingExecutor::<FEN>::prepare(fork_config, resolved).await?;
     Ok((prepared, create2_deployer))
 }
 

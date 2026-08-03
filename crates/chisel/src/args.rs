@@ -6,7 +6,13 @@ use clap::Parser;
 use eyre::{Context, Result};
 use foundry_cli::utils::{self, LoadConfig};
 use foundry_common::fs;
-use foundry_evm::core::evm::{EthEvmNetwork, FoundryEvmNetwork, OpEvmNetwork, TempoEvmNetwork};
+use foundry_evm::{
+    core::evm::{EthEvmNetwork, FoundryEvmNetwork, OpEvmNetwork, TempoEvmNetwork},
+    opts::{
+        EvmOpts,
+        resolution::{CommandProfileResolution, NetworkIntent, ResolvedEvmOpts},
+    },
+};
 use foundry_evm_networks::ResolvedNetworkProfile;
 use rustyline::{Editor, config::Configurer, error::ReadlineError};
 use std::{ops::ControlFlow, path::PathBuf};
@@ -67,18 +73,18 @@ pub async fn run_command(args: Chisel) -> Result<()> {
     }
     evm_opts.infer_network_from_fork().await;
     config.networks = evm_opts.networks;
-    let network_profile = evm_opts.networks.resolve();
+    let resolved =
+        CommandProfileResolution::new().resolve_evm_opts(evm_opts.clone(), NetworkIntent::new())?;
 
-    match chisel_execution_kind(network_profile) {
+    match chisel_execution_kind(resolved.network_profile()) {
         ChiselExecutionKind::Tempo => {
-            run_command_with_network::<TempoEvmNetwork>(args, config, evm_opts, network_profile)
-                .await
+            run_command_with_network::<TempoEvmNetwork>(args, config, evm_opts, resolved).await
         }
         ChiselExecutionKind::Optimism => {
-            run_command_with_network::<OpEvmNetwork>(args, config, evm_opts, network_profile).await
+            run_command_with_network::<OpEvmNetwork>(args, config, evm_opts, resolved).await
         }
         ChiselExecutionKind::Ethereum => {
-            run_command_with_network::<EthEvmNetwork>(args, config, evm_opts, network_profile).await
+            run_command_with_network::<EthEvmNetwork>(args, config, evm_opts, resolved).await
         }
     }
 }
@@ -86,8 +92,8 @@ pub async fn run_command(args: Chisel) -> Result<()> {
 async fn run_command_with_network<FEN: FoundryEvmNetwork>(
     args: Chisel,
     config: foundry_config::Config,
-    evm_opts: foundry_evm::opts::EvmOpts,
-    network_profile: ResolvedNetworkProfile,
+    evm_opts: EvmOpts,
+    resolved: ResolvedEvmOpts,
 ) -> Result<()> {
     // Create a new cli dispatcher
     let mut dispatcher = ChiselDispatcher::<FEN>::new(crate::source::SessionSourceConfig {
@@ -96,7 +102,8 @@ async fn run_command_with_network<FEN: FoundryEvmNetwork>(
         foundry_config: config,
         no_vm: args.no_vm,
         evm_opts,
-        network_profile,
+        network_profile: resolved.network_profile(),
+        resolved_evm_opts: Some(resolved),
         state: None,
         calldata: None,
         ir_minimum: args.ir_minimum,

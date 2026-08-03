@@ -552,6 +552,7 @@ fn prepare_loaded_session_config<FEN: FoundryEvmNetwork>(
 ) -> Result<()> {
     ensure_loaded_session_network_matches(&current.foundry_config, &loaded.foundry_config, id)?;
     loaded.network_profile = current.network_profile;
+    loaded.resolved_evm_opts = current.resolved_evm_opts.clone();
     loaded.state = None;
     Ok(())
 }

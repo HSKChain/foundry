@@ -42,7 +42,10 @@ use foundry_debugger::Debugger;
 use foundry_evm::{
     construction::{DecoderConfig, EvmConstruction},
     core::evm::{EthEvmNetwork, FoundryEvmNetwork, OpEvmNetwork, TempoEvmNetwork},
-    opts::EvmOpts,
+    opts::{
+        EvmOpts,
+        resolution::{CommandProfileResolution, NetworkIntent, ResolvedEvmOpts},
+    },
     traces::{backtrace::BacktraceBuilder, identifier::TraceIdentifiers, prune_trace_depth},
 };
 use foundry_evm_networks::ResolvedNetworkProfile;
@@ -356,15 +359,16 @@ impl TestArgs {
 
         // Auto-detect network from fork chain ID when not explicitly configured.
         evm_opts.infer_network_from_fork().await;
-        let network_profile = evm_opts.networks.resolve();
+        let resolved = CommandProfileResolution::new()
+            .resolve_evm_opts(evm_opts.clone(), NetworkIntent::new())?;
 
         // Dispatch based on network type.
-        let (libraries, mut outcome) = match network_dispatch_kind(network_profile) {
+        let (libraries, mut outcome) = match network_dispatch_kind(resolved.network_profile()) {
             NetworkDispatchKind::Tempo => {
                 self.build_and_run_tests::<TempoEvmNetwork>(
-                    config,
-                    evm_opts,
-                    network_profile,
+                    config.clone(),
+                    evm_opts.clone(),
+                    resolved.clone(),
                     output,
                     filter,
                     coverage,
@@ -375,9 +379,9 @@ impl TestArgs {
             }
             NetworkDispatchKind::Optimism => {
                 self.build_and_run_tests::<OpEvmNetwork>(
-                    config,
-                    evm_opts,
-                    network_profile,
+                    config.clone(),
+                    evm_opts.clone(),
+                    resolved.clone(),
                     output,
                     filter,
                     coverage,
@@ -390,7 +394,7 @@ impl TestArgs {
                 self.build_and_run_tests::<EthEvmNetwork>(
                     config,
                     evm_opts,
-                    network_profile,
+                    resolved,
                     output,
                     filter,
                     coverage,
@@ -479,7 +483,7 @@ impl TestArgs {
         &self,
         config: Config,
         evm_opts: EvmOpts,
-        network_profile: ResolvedNetworkProfile,
+        resolved: ResolvedEvmOpts,
         output: &ProjectCompileOutput,
         filter: &ProjectPathsAwareFilter,
         coverage: bool,
@@ -488,7 +492,7 @@ impl TestArgs {
     ) -> eyre::Result<(Libraries, TestOutcome)> {
         let verbosity = evm_opts.verbosity;
         let config = Arc::new(config);
-        let prepared = EvmConstruction::prepare::<FEN>(&evm_opts, &config, network_profile).await?;
+        let prepared = EvmConstruction::prepare::<FEN>(&resolved, &config).await?;
         let runner = MultiContractRunnerBuilder::new(config.clone())
             .set_debug(should_debug)
             .set_decode_internal(decode_internal)

@@ -13,7 +13,7 @@ use foundry_evm_core::{
     FoundryBlock, FoundryTransaction,
     backend::{Backend, DatabaseExt, construction as backend_construction},
     evm::{BlockEnvFor, EvmEnvFor, FoundryEvmNetwork, SpecFor, TxEnvFor},
-    opts::{EvmOpts, construction as opts_construction},
+    opts::{construction as opts_construction, resolution::ResolvedEvmOpts},
 };
 use foundry_evm_networks::{
     NetworkExecutionContext, PrecompileCompositionError, ResolvedNetworkProfile,
@@ -71,15 +71,16 @@ pub struct EvmConstruction;
 impl EvmConstruction {
     /// Prepares environment, optional fork material, and reusable backend state.
     pub async fn prepare<FEN: FoundryEvmNetwork>(
-        evm_opts: &EvmOpts,
+        resolved: &ResolvedEvmOpts,
         config: &Config,
-        network_profile: ResolvedNetworkProfile,
     ) -> Result<PreparedEvm<FEN>, EvmConstructionError>
     where
         SpecFor<FEN>: Into<revm::primitives::hardfork::SpecId> + Default + Copy,
         BlockEnvFor<FEN>: FoundryBlock + Default,
         TxEnvFor<FEN>: FoundryTransaction + Default,
     {
+        let evm_opts = resolved.evm_opts();
+        let network_profile = resolved.network_profile();
         validate_family::<FEN>(network_profile)?;
         let prepared = opts_construction::prepare::<SpecFor<FEN>, BlockEnvFor<FEN>, TxEnvFor<FEN>>(
             evm_opts,
@@ -123,7 +124,7 @@ impl EvmConstruction {
 
     /// Prepares a fresh environment snapshot over reusable opaque backend state.
     pub async fn prepare_with_state<FEN: FoundryEvmNetwork>(
-        evm_opts: &EvmOpts,
+        resolved: &ResolvedEvmOpts,
         state: &ReusableEvmState<FEN>,
     ) -> Result<PreparedEvm<FEN>, EvmConstructionError>
     where
@@ -131,11 +132,18 @@ impl EvmConstruction {
         BlockEnvFor<FEN>: FoundryBlock + Default,
         TxEnvFor<FEN>: FoundryTransaction + Default,
     {
-        validate_family::<FEN>(state.network_profile)?;
+        let network_profile = resolved.network_profile();
+        if network_profile != state.network_profile {
+            return Err(EvmConstructionError::ForkProfileMismatch {
+                fork: state.network_profile.name(),
+                prepared: network_profile.name(),
+            });
+        }
+        validate_family::<FEN>(network_profile)?;
         let prepared = opts_construction::prepare::<SpecFor<FEN>, BlockEnvFor<FEN>, TxEnvFor<FEN>>(
-            evm_opts,
+            resolved.evm_opts(),
             None,
-            state.network_profile,
+            network_profile,
         )
         .await
         .map_err(|error| EvmConstructionError::Environment(error.to_string()))?;
@@ -154,7 +162,7 @@ impl EvmConstruction {
             evm_env,
             tx_env,
             fork_block_number,
-            network_profile: state.network_profile,
+            network_profile,
             is_fork: state.is_fork,
         })
     }
@@ -198,14 +206,20 @@ impl<FEN: FoundryEvmNetwork> PreparedEvm<FEN> {
     }
 
     /// Refreshes environment data while reusing this preparation's backend state and profile.
-    pub async fn refresh(&self, evm_opts: &EvmOpts) -> Result<Self, EvmConstructionError>
+    pub async fn refresh(&self, resolved: &ResolvedEvmOpts) -> Result<Self, EvmConstructionError>
     where
         SpecFor<FEN>: Into<revm::primitives::hardfork::SpecId> + Default + Copy,
         BlockEnvFor<FEN>: FoundryBlock + Default,
         TxEnvFor<FEN>: FoundryTransaction + Default,
     {
+        if resolved.network_profile() != self.network_profile {
+            return Err(EvmConstructionError::ForkProfileMismatch {
+                fork: self.network_profile.name(),
+                prepared: resolved.network_profile().name(),
+            });
+        }
         let prepared = opts_construction::prepare::<SpecFor<FEN>, BlockEnvFor<FEN>, TxEnvFor<FEN>>(
-            evm_opts,
+            resolved.evm_opts(),
             None,
             self.network_profile,
         )
@@ -222,7 +236,7 @@ impl<FEN: FoundryEvmNetwork> PreparedEvm<FEN> {
             fork_block_number,
             network_profile: self.network_profile,
             network_context,
-            is_fork: evm_opts.fork_url.is_some(),
+            is_fork: resolved.has_fork(),
         })
     }
 
@@ -618,28 +632,35 @@ mod tests {
     use alloy_primitives::address;
     #[cfg(feature = "hashkey")]
     use foundry_config::GasLimit;
-    use foundry_evm_core::evm::EthEvmNetwork;
     #[cfg(feature = "hashkey")]
     use foundry_evm_core::evm::OpEvmNetwork;
+    use foundry_evm_core::{
+        evm::EthEvmNetwork,
+        opts::{
+            EvmOpts,
+            resolution::{CommandProfileResolution, NetworkIntent},
+        },
+    };
     use foundry_evm_networks::NetworkConfigs;
-    #[cfg(feature = "hashkey")]
-    use hsk_b20_config::B20Config;
+
+    fn resolve(evm_opts: EvmOpts) -> ResolvedEvmOpts {
+        CommandProfileResolution::new().resolve_evm_opts(evm_opts, NetworkIntent::new()).unwrap()
+    }
 
     #[cfg(feature = "hashkey")]
     const B20_FACTORY: Address = address!("B20F000000000000000000000000000000000000");
 
     #[tokio::test]
     async fn rejects_profile_family_mismatch_before_preparation() {
-        let error = match EvmConstruction::prepare::<EthEvmNetwork>(
-            &EvmOpts::default(),
-            &Config::default(),
-            NetworkConfigs::with_optimism().resolve(),
-        )
-        .await
-        {
-            Ok(_) => panic!("mismatched family must fail"),
-            Err(error) => error,
-        };
+        let mut evm_opts = EvmOpts::default();
+        evm_opts.networks = NetworkConfigs::with_optimism();
+        let error =
+            match EvmConstruction::prepare::<EthEvmNetwork>(&resolve(evm_opts), &Config::default())
+                .await
+            {
+                Ok(_) => panic!("mismatched family must fail"),
+                Err(error) => error,
+            };
 
         assert!(matches!(
             error,
@@ -653,30 +674,46 @@ mod tests {
 
     #[cfg(feature = "hashkey")]
     #[tokio::test(flavor = "multi_thread")]
+    async fn rejects_reusable_state_from_another_resolved_profile() {
+        let mut hashkey_opts = EvmOpts::default();
+        hashkey_opts.networks = NetworkConfigs::with_hashkey();
+        let hashkey = resolve(hashkey_opts);
+        let state = EvmConstruction::prepare::<OpEvmNetwork>(&hashkey, &Config::default())
+            .await
+            .unwrap()
+            .reusable_state();
+
+        let ethereum = resolve(EvmOpts::default());
+        let error = EvmConstruction::prepare_with_state::<OpEvmNetwork>(&ethereum, &state)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, EvmConstructionError::ForkProfileMismatch { .. }));
+    }
+
+    #[cfg(feature = "hashkey")]
+    #[tokio::test(flavor = "multi_thread")]
     async fn construction_binds_execution_and_decoder_to_one_snapshot() {
         let mut evm_opts = EvmOpts::default();
         evm_opts.env.chain_id = Some(177);
         evm_opts.env.gas_limit = GasLimit(30_000_000);
-        let profile = NetworkConfigs::with_hashkey().resolve();
+        evm_opts.networks = NetworkConfigs::with_hashkey();
+        let resolved = resolve(evm_opts.clone());
 
-        let normal =
-            EvmConstruction::prepare::<OpEvmNetwork>(&evm_opts, &Config::default(), profile)
-                .await
-                .unwrap()
-                .construct(ExecutorConfig::default())
-                .unwrap();
-        let traced =
-            EvmConstruction::prepare::<OpEvmNetwork>(&evm_opts, &Config::default(), profile)
-                .await
-                .unwrap()
-                .construct(ExecutorConfig::default().trace_mode(TraceMode::Call))
-                .unwrap();
-        let isolated =
-            EvmConstruction::prepare::<OpEvmNetwork>(&evm_opts, &Config::default(), profile)
-                .await
-                .unwrap()
-                .construct(ExecutorConfig::default().enable_isolation(true))
-                .unwrap();
+        let normal = EvmConstruction::prepare::<OpEvmNetwork>(&resolved, &Config::default())
+            .await
+            .unwrap()
+            .construct(ExecutorConfig::default())
+            .unwrap();
+        let traced = EvmConstruction::prepare::<OpEvmNetwork>(&resolved, &Config::default())
+            .await
+            .unwrap()
+            .construct(ExecutorConfig::default().trace_mode(TraceMode::Call))
+            .unwrap();
+        let isolated = EvmConstruction::prepare::<OpEvmNetwork>(&resolved, &Config::default())
+            .await
+            .unwrap()
+            .construct(ExecutorConfig::default().enable_isolation(true))
+            .unwrap();
 
         let trace = CallTrace { address: B20_FACTORY, ..Default::default() };
         let normal_decoded = normal.decode_function(&trace).await;
@@ -691,31 +728,30 @@ mod tests {
     #[cfg(feature = "hashkey")]
     #[tokio::test(flavor = "multi_thread")]
     async fn reusable_state_derives_a_fresh_activation_snapshot() {
-        let config = B20Config::new(Some(100), Some(Address::repeat_byte(0x11))).unwrap();
-        let profile = NetworkConfigs::with_hashkey().resolve().with_b20_config_for_test(config);
         let mut evm_opts = EvmOpts::default();
         evm_opts.env.chain_id = Some(177);
         evm_opts.env.gas_limit = GasLimit(30_000_000);
-        evm_opts.env.block_timestamp = revm::primitives::U256::from(99);
+        evm_opts.env.block_timestamp = revm::primitives::U256::ZERO;
 
+        evm_opts.networks = NetworkConfigs::with_hashkey();
+        let resolved = resolve(evm_opts.clone());
         let prepared =
-            EvmConstruction::prepare::<OpEvmNetwork>(&evm_opts, &Config::default(), profile)
-                .await
-                .unwrap();
+            EvmConstruction::prepare::<OpEvmNetwork>(&resolved, &Config::default()).await.unwrap();
         let state = prepared.reusable_state();
         let before = prepared.construct(ExecutorConfig::default()).unwrap();
         let trace = CallTrace { address: B20_FACTORY, ..Default::default() };
-        assert_eq!(before.timestamp(), 99);
-        assert_eq!(before.decode_function(&trace).await.label, None);
+        assert_eq!(before.timestamp(), 0);
+        assert_eq!(before.decode_function(&trace).await.label.as_deref(), Some("B20Factory"));
 
-        evm_opts.env.block_timestamp = revm::primitives::U256::from(100);
-        let after = EvmConstruction::prepare_with_state::<OpEvmNetwork>(&evm_opts, &state)
+        evm_opts.env.block_timestamp = revm::primitives::U256::from(1);
+        let resolved = resolve(evm_opts);
+        let after = EvmConstruction::prepare_with_state::<OpEvmNetwork>(&resolved, &state)
             .await
             .unwrap()
             .construct(ExecutorConfig::default())
             .unwrap();
 
-        assert_eq!(after.timestamp(), 100);
+        assert_eq!(after.timestamp(), 1);
         assert_eq!(after.decode_function(&trace).await.label.as_deref(), Some("B20Factory"));
     }
 }

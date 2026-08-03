@@ -207,18 +207,14 @@ impl<FEN: FoundryEvmNetwork> SessionSource<FEN> {
     }
 
     async fn build_runner(&mut self, final_pc: usize) -> Result<ChiselRunner<FEN>> {
+        let resolved = self
+            .config
+            .resolved_evm_opts
+            .as_ref()
+            .ok_or_else(|| eyre::eyre!("missing resolved EVM options for Chisel session"))?;
         let prepared = match self.config.state.as_ref() {
-            Some(state) => {
-                EvmConstruction::prepare_with_state::<FEN>(&self.config.evm_opts, state).await?
-            }
-            None => {
-                EvmConstruction::prepare::<FEN>(
-                    &self.config.evm_opts,
-                    &self.config.foundry_config,
-                    self.config.network_profile,
-                )
-                .await?
-            }
+            Some(state) => EvmConstruction::prepare_with_state::<FEN>(resolved, state).await?,
+            None => EvmConstruction::prepare::<FEN>(resolved, &self.config.foundry_config).await?,
         };
 
         let executor = prepared.construct(
@@ -1258,7 +1254,14 @@ mod tests {
     #[cfg(feature = "hashkey")]
     use foundry_config::{Config, GasLimit};
     #[cfg(feature = "hashkey")]
-    use foundry_evm::{core::evm::OpEvmNetwork, opts::EvmOpts, revm::Database};
+    use foundry_evm::{
+        core::evm::OpEvmNetwork,
+        opts::{
+            EvmOpts,
+            resolution::{CommandProfileResolution, NetworkIntent},
+        },
+        revm::Database,
+    };
     #[cfg(feature = "hashkey")]
     use foundry_evm_networks::NetworkConfigs;
     use std::sync::Mutex;
@@ -1267,18 +1270,18 @@ mod tests {
     #[test]
     fn stateful_rebuild_preserves_hashkey_profile_and_state() {
         GlobalArgs::default().block_on(async {
-            let network_profile = NetworkConfigs::with_hashkey().resolve();
             let address = Address::random();
             let mut evm_opts = EvmOpts::default();
+            evm_opts.networks = NetworkConfigs::with_hashkey();
             evm_opts.env.chain_id = Some(31337);
             evm_opts.env.gas_limit = GasLimit(30_000_000);
-            let prepared = EvmConstruction::prepare::<OpEvmNetwork>(
-                &evm_opts,
-                &Config::default(),
-                network_profile,
-            )
-            .await
-            .unwrap();
+            let resolved = CommandProfileResolution::new()
+                .resolve_evm_opts(evm_opts.clone(), NetworkIntent::new())
+                .unwrap();
+            let network_profile = resolved.network_profile();
+            let prepared = EvmConstruction::prepare::<OpEvmNetwork>(&resolved, &Config::default())
+                .await
+                .unwrap();
             let mut executor = prepared.construct(ExecutorConfig::default()).unwrap();
             executor.set_balance(address, U256::from(42)).unwrap();
             let state = executor.reusable_state();
@@ -1286,6 +1289,7 @@ mod tests {
             let mut source = source_with_network::<OpEvmNetwork>();
             source.config.network_profile = network_profile;
             source.config.evm_opts = evm_opts;
+            source.config.resolved_evm_opts = Some(resolved);
             source.config.state = Some(state);
 
             let (rebuilt, executes) =
@@ -1296,7 +1300,7 @@ mod tests {
             let rebuilt_state = rebuilt.config.state.as_ref().unwrap();
             assert_eq!(rebuilt_state.network_profile(), network_profile);
             let prepared = EvmConstruction::prepare_with_state::<OpEvmNetwork>(
-                &rebuilt.config.evm_opts,
+                rebuilt.config.resolved_evm_opts.as_ref().unwrap(),
                 rebuilt_state,
             )
             .await

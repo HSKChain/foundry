@@ -386,6 +386,9 @@ pub struct SessionSourceConfig<FEN: FoundryEvmNetwork = EthEvmNetwork> {
     /// Immutable runtime network profile.
     #[serde(skip)]
     pub network_profile: ResolvedNetworkProfile,
+    /// Opaque resolved options handed to EVM construction.
+    #[serde(skip)]
+    pub resolved_evm_opts: Option<foundry_evm::opts::resolution::ResolvedEvmOpts>,
     /// Disable the default `Vm` import.
     pub no_vm: bool,
     /// Opaque reusable EVM state for the session's runner.

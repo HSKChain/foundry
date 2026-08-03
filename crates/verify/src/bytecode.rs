@@ -37,6 +37,7 @@ use foundry_evm::{
         evm::{EthEvmNetwork, FoundryEvmNetwork, OpEvmNetwork, SpecFor, TempoEvmNetwork, TxEnvFor},
     },
     executors::EvmError,
+    opts::resolution::{CommandProfileResolution, NetworkIntent},
 };
 use foundry_evm_networks::{EvmFamily, NetworkVariant, ResolvedNetworkProfile};
 use revm::{context::Block as _, state::AccountInfo};
@@ -159,23 +160,20 @@ impl VerifyBytecodeArgs {
 
         let network_profile = resolve_verify_network_profile(&mut config, chain);
         match network_profile.evm_family() {
-            EvmFamily::Ethereum => {
-                self.run_with_network_and_config::<EthEvmNetwork>(config, network_profile).await
-            }
-            EvmFamily::Optimism => {
-                self.run_with_network_and_config::<OpEvmNetwork>(config, network_profile).await
-            }
-            EvmFamily::Tempo => {
-                self.run_with_network_and_config::<TempoEvmNetwork>(config, network_profile).await
-            }
+            EvmFamily::Ethereum => self.run_with_network_and_config::<EthEvmNetwork>(config).await,
+            EvmFamily::Optimism => self.run_with_network_and_config::<OpEvmNetwork>(config).await,
+            EvmFamily::Tempo => self.run_with_network_and_config::<TempoEvmNetwork>(config).await,
         }
     }
 
     async fn run_with_network_and_config<FEN: FoundryEvmNetwork>(
         mut self,
         config: Config,
-        network_profile: ResolvedNetworkProfile,
     ) -> Result<()> {
+        let (_, evm_opts) = config.clone().load_config_and_evm_opts()?;
+        let resolved = CommandProfileResolution::new()
+            .resolve_evm_opts(evm_opts.clone(), NetworkIntent::new())?;
+        let network_profile = resolved.network_profile();
         let provider = ProviderBuilder::<FEN::Network>::from_config(&config)?.build()?;
         let chain = match config.get_rpc_url() {
             Some(_) => utils::get_chain::<FEN::Network, _>(config.chain, &provider).await?,
@@ -280,7 +278,7 @@ impl VerifyBytecodeArgs {
                 gen_blk_num,
                 evm_version,
                 evm_opts,
-                network_profile,
+                resolved,
             )
             .await?;
 
@@ -501,7 +499,7 @@ impl VerifyBytecodeArgs {
                 simulation_block - 1, // env.fork_block_number
                 evm_version,
                 evm_opts,
-                network_profile,
+                resolved,
             )
             .await?;
             let block = provider.get_block(simulation_block.into()).full().await?;

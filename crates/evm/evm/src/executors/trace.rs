@@ -10,10 +10,9 @@ use foundry_config::{Chain, Config, evm_spec_id};
 use foundry_evm_core::{
     FoundryBlock, FoundryTransaction,
     evm::{BlockEnvFor, FoundryEvmNetwork, SpecFor, TxEnvFor},
-    opts::EvmOpts,
+    opts::resolution::ResolvedEvmOpts,
 };
 use foundry_evm_hardforks::TempoHardfork;
-use foundry_evm_networks::ResolvedNetworkProfile;
 use foundry_evm_traces::{CallTraceDecoder, TraceMode};
 use revm::state::Bytecode;
 use std::ops::{Deref, DerefMut};
@@ -95,18 +94,19 @@ impl<FEN: FoundryEvmNetwork> TracingExecutor<FEN> {
     /// uses the fork block number from the config
     pub async fn prepare(
         config: &mut Config,
-        mut evm_opts: EvmOpts,
-        network_profile: ResolvedNetworkProfile,
+        resolved: ResolvedEvmOpts,
     ) -> eyre::Result<(PreparedEvm<FEN>, Chain)>
     where
         SpecFor<FEN>: Into<revm::primitives::hardfork::SpecId> + Default + Copy,
         BlockEnvFor<FEN>: FoundryBlock + Default,
         TxEnvFor<FEN>: FoundryTransaction + Default,
     {
-        evm_opts.fork_url = Some(config.get_rpc_url_or_localhost_http()?.into_owned());
-        evm_opts.fork_block_number = config.fork_block_number;
+        let resolved = resolved
+            .with_fork_url(config.get_rpc_url_or_localhost_http()?.into_owned())
+            .with_fork_block_number(config.fork_block_number);
+        let network_profile = resolved.network_profile();
 
-        let prepared = EvmConstruction::prepare::<FEN>(&evm_opts, config, network_profile).await?;
+        let prepared = EvmConstruction::prepare::<FEN>(&resolved, config).await?;
         config
             .labels
             .extend(network_profile.precompile_labels(Some(config.evm_spec_id::<TempoHardfork>())));
@@ -135,7 +135,13 @@ mod tests {
     use super::*;
     use alloy_primitives::address;
     use foundry_config::GasLimit;
-    use foundry_evm_core::evm::OpEvmNetwork;
+    use foundry_evm_core::{
+        evm::OpEvmNetwork,
+        opts::{
+            EvmOpts,
+            resolution::{CommandProfileResolution, NetworkIntent},
+        },
+    };
     use foundry_evm_networks::NetworkConfigs;
     use foundry_evm_traces::CallTrace;
 
@@ -144,11 +150,12 @@ mod tests {
         let mut evm_opts = EvmOpts::default();
         evm_opts.env.chain_id = Some(177);
         evm_opts.env.gas_limit = GasLimit(30_000_000);
-        let profile = NetworkConfigs::with_hashkey().resolve();
+        evm_opts.networks = NetworkConfigs::with_hashkey();
+        let resolved = CommandProfileResolution::new()
+            .resolve_evm_opts(evm_opts, NetworkIntent::new())
+            .unwrap();
         let prepared =
-            EvmConstruction::prepare::<OpEvmNetwork>(&evm_opts, &Config::default(), profile)
-                .await
-                .unwrap();
+            EvmConstruction::prepare::<OpEvmNetwork>(&resolved, &Config::default()).await.unwrap();
 
         let executor =
             TracingExecutor::new(prepared, None, TraceMode::Call, Address::ZERO, None).unwrap();
