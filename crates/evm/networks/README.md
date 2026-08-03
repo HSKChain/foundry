@@ -23,12 +23,15 @@ Networks:
 
 ```
 
-If you'd like network features to be enabled automatically based on the chain ID, update `NetworkConfigs::with_chain_id`:
+If you'd like network features to be enabled automatically based on the chain ID, register the
+chain in `NetworkConfigs::from_known_chain_id` so command profile resolution
+(`CommandProfileResolution` in `foundry-evm-core`) can select the profile from a chain hint or
+fork identity:
 
 ```rust
 impl NetworkConfigs {
-    pub fn with_chain_id(chain_id: u64) -> Self {
-        // Enable custom network features here
+    pub fn from_known_chain_id(chain_id: u64) -> Option<Self> {
+        // Return `Some(configs)` for your known chain identity
     }
 }
 ```

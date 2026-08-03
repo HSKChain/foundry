@@ -2366,7 +2366,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn can_read_write_cache() {
+    async fn can_read_write_fork_cache() {
         let endpoint = &*foundry_test_utils::rpc::next_http_rpc_endpoint();
         let provider = get_http_provider(endpoint);
 
@@ -2376,12 +2376,13 @@ mod tests {
         evm_opts.fork_url = Some(endpoint.to_string());
         evm_opts.fork_block_number = Some(block_num);
 
-        let (evm_env, _, fork_block) = evm_opts.env::<SpecId, BlockEnv, TxEnv>().await.unwrap();
+        let resolved = crate::opts::resolution::CommandProfileResolution::new()
+            .resolve_evm_opts(evm_opts, crate::opts::resolution::NetworkIntent::new())
+            .unwrap();
+        let prepared =
+            resolved.prepare::<SpecId, BlockEnv, TxEnv>(Some(&Config::default())).await.unwrap();
 
-        let fork =
-            evm_opts.get_fork(&Config::default(), evm_env.cfg_env.chain_id, fork_block).unwrap();
-
-        let backend = Backend::<EthEvmNetwork>::spawn(Some(fork)).unwrap();
+        let backend = Backend::<EthEvmNetwork>::spawn(prepared.fork).unwrap();
 
         // some rng contract from etherscan
         let address = address!("0x63091244180ae240c87d1f528f5f269134cb07b3");
@@ -2395,7 +2396,7 @@ mod tests {
 
         let meta = BlockchainDbMeta {
             chain: None,
-            block_env: evm_env.block_env,
+            block_env: prepared.evm_env.block_env,
             hosts: Default::default(),
         };
 

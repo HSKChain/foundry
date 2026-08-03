@@ -13,7 +13,7 @@ use foundry_evm_core::{
     FoundryBlock, FoundryTransaction,
     backend::{Backend, DatabaseExt, construction as backend_construction},
     evm::{BlockEnvFor, EvmEnvFor, FoundryEvmNetwork, SpecFor, TxEnvFor},
-    opts::{construction as opts_construction, resolution::ResolvedEvmOpts},
+    opts::resolution::{PreparedEvmOpts, ResolvedEvmOpts},
 };
 use foundry_evm_networks::{
     NetworkExecutionContext, PrecompileCompositionError, ResolvedNetworkProfile,
@@ -79,18 +79,13 @@ impl EvmConstruction {
         BlockEnvFor<FEN>: FoundryBlock + Default,
         TxEnvFor<FEN>: FoundryTransaction + Default,
     {
-        let evm_opts = resolved.evm_opts();
         let network_profile = resolved.network_profile();
         validate_family::<FEN>(network_profile)?;
-        let prepared = opts_construction::prepare::<SpecFor<FEN>, BlockEnvFor<FEN>, TxEnvFor<FEN>>(
-            evm_opts,
-            Some(config),
-            network_profile,
-        )
-        .await
-        .map_err(|error| EvmConstructionError::Environment(error.to_string()))?;
-        let opts_construction::PreparedEvmOpts { evm_env, tx_env, fork_block_number, fork } =
-            prepared;
+        let prepared = resolved
+            .prepare::<SpecFor<FEN>, BlockEnvFor<FEN>, TxEnvFor<FEN>>(Some(config))
+            .await
+            .map_err(|error| EvmConstructionError::Environment(error.to_string()))?;
+        let PreparedEvmOpts { evm_env, tx_env, fork_block_number, fork } = prepared;
         if let Some(fork) = &fork
             && fork.network_profile != network_profile
         {
@@ -140,15 +135,11 @@ impl EvmConstruction {
             });
         }
         validate_family::<FEN>(network_profile)?;
-        let prepared = opts_construction::prepare::<SpecFor<FEN>, BlockEnvFor<FEN>, TxEnvFor<FEN>>(
-            resolved.evm_opts(),
-            None,
-            network_profile,
-        )
-        .await
-        .map_err(|error| EvmConstructionError::Environment(error.to_string()))?;
-        let opts_construction::PreparedEvmOpts { evm_env, tx_env, fork_block_number, .. } =
-            prepared;
+        let prepared = resolved
+            .prepare::<SpecFor<FEN>, BlockEnvFor<FEN>, TxEnvFor<FEN>>(None)
+            .await
+            .map_err(|error| EvmConstructionError::Environment(error.to_string()))?;
+        let PreparedEvmOpts { evm_env, tx_env, fork_block_number, .. } = prepared;
         if state.backend.network_profile() != state.network_profile {
             return Err(EvmConstructionError::ForkProfileMismatch {
                 fork: state.backend.network_profile().name(),
@@ -218,15 +209,11 @@ impl<FEN: FoundryEvmNetwork> PreparedEvm<FEN> {
                 prepared: resolved.network_profile().name(),
             });
         }
-        let prepared = opts_construction::prepare::<SpecFor<FEN>, BlockEnvFor<FEN>, TxEnvFor<FEN>>(
-            resolved.evm_opts(),
-            None,
-            self.network_profile,
-        )
-        .await
-        .map_err(|error| EvmConstructionError::Environment(error.to_string()))?;
-        let opts_construction::PreparedEvmOpts { evm_env, tx_env, fork_block_number, .. } =
-            prepared;
+        let prepared = resolved
+            .prepare::<SpecFor<FEN>, BlockEnvFor<FEN>, TxEnvFor<FEN>>(None)
+            .await
+            .map_err(|error| EvmConstructionError::Environment(error.to_string()))?;
+        let PreparedEvmOpts { evm_env, tx_env, fork_block_number, .. } = prepared;
         let network_context = execution_context::<FEN>(&evm_env);
 
         Ok(Self {

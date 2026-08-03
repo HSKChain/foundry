@@ -4,12 +4,11 @@ use crate::{
     fork::CreateFork,
     utils::{apply_chain_and_block_specific_env_changes, block_env_from_header},
 };
-use alloy_chains::NamedChain;
 use alloy_consensus::BlockHeader;
 use alloy_network::{AnyNetwork, BlockResponse, Network};
 use alloy_primitives::{Address, B256, BlockNumber, ChainId, U256};
 use alloy_provider::{Provider, RootProvider};
-use alloy_rpc_types::{BlockNumberOrTag, anvil::NodeInfo};
+use alloy_rpc_types::BlockNumberOrTag;
 use eyre::WrapErr;
 use foundry_common::{ALCHEMY_FREE_TIER_CUPS, NON_ARCHIVE_NODE_WARNING, provider::ProviderBuilder};
 use foundry_config::{Chain, Config, GasLimit};
@@ -132,51 +131,11 @@ impl EvmOpts {
             .build()
     }
 
-    /// Infers the network configuration from the fork chain ID if not already set.
-    ///
-    /// When a fork URL is configured and the network has not been explicitly set,
-    /// this fetches the chain ID from the remote endpoint and calls
-    /// [`NetworkConfigs::with_chain_id`] to auto-enable the correct network
-    /// (e.g. Tempo, OP Stack) based on the chain ID.
-    pub async fn infer_network_from_fork(&mut self) {
-        if !self.networks.is_tempo()
-            && !self.networks.is_optimism()
-            && let Some(ref fork_url) = self.fork_url
-            && let Ok(provider) = self.fork_provider_with_url::<AnyNetwork>(fork_url)
-            && let Ok(chain_id) = provider.get_chain_id().await
-        {
-            // If Anvil's chain, request anvil_nodeInfo to determine if the network is Tempo.
-            if chain_id == NamedChain::AnvilHardhat as u64 {
-                if let Ok(node_info) =
-                    provider.raw_request::<_, NodeInfo>("anvil_nodeInfo".into(), ()).await
-                    && node_info.network.is_some_and(|network| network == "tempo")
-                {
-                    self.networks = NetworkConfigs::with_tempo();
-                }
-            } else {
-                self.networks = self.networks.with_chain_id(chain_id);
-            }
-        }
-    }
-
     /// Returns a tuple with [`EvmEnv`], `TxEnv`, and the actual fork block number.
-    ///
-    /// If a `fork_url` is set, creates a provider and passes it to both `EvmOpts::fork_evm_env`
-    /// and `EvmOpts::fork_tx_env`. Falls back to local settings when no fork URL is configured.
     ///
     /// The fork block number is returned separately because on some L2s (e.g., Arbitrum) the
     /// `block_env.number` may be remapped (to the L1 block number) and therefore cannot be used
     /// to pin the fork.
-    pub async fn env<
-        SPEC: Into<SpecId> + Default + Copy,
-        BLOCK: FoundryBlock + Default,
-        TX: FoundryTransaction + Default,
-    >(
-        &self,
-    ) -> eyre::Result<(EvmEnv<SPEC, BLOCK>, TX, Option<BlockNumber>)> {
-        self.env_for_profile(self.networks.resolve()).await
-    }
-
     async fn env_for_profile<
         SPEC: Into<SpecId> + Default + Copy,
         BLOCK: FoundryBlock + Default,
@@ -199,18 +158,6 @@ impl EvmOpts {
 
     /// Returns the [`EvmEnv`] (cfg + block) and [`BlockNumber`] fetched from the fork endpoint via
     /// provider
-    pub async fn fork_evm_env<
-        SPEC: Into<SpecId> + Default + Copy,
-        BLOCK: FoundryBlock + Default,
-        N: Network,
-        P: Provider<N>,
-    >(
-        &self,
-        provider: &P,
-    ) -> eyre::Result<(EvmEnv<SPEC, BLOCK>, BlockNumber)> {
-        self.fork_evm_env_for_profile(provider, self.networks.resolve()).await
-    }
-
     pub(crate) async fn fork_evm_env_for_profile<
         SPEC: Into<SpecId> + Default + Copy,
         BLOCK: FoundryBlock + Default,
@@ -365,16 +312,7 @@ impl EvmOpts {
     /// `fork_block_number` is the actual block number to pin the fork to. This must be the
     /// real chain block number, not a remapped value. On some L2s (e.g., Arbitrum)
     /// `block_env.number` is remapped to the L1 block number, so callers must pass the
-    /// original block number returned by [`EvmOpts::env`] instead.
-    pub fn get_fork(
-        &self,
-        config: &Config,
-        chain_id: u64,
-        fork_block_number: Option<BlockNumber>,
-    ) -> Option<CreateFork> {
-        self.get_fork_for_profile(config, chain_id, fork_block_number, self.networks.resolve())
-    }
-
+    /// original block number returned by [`resolution::ResolvedEvmOpts::prepare`] instead.
     fn get_fork_for_profile(
         &self,
         config: &Config,
@@ -497,98 +435,11 @@ async fn option_try_or_else<T, E>(
     if let Some(value) = option { Ok(value) } else { f().await }
 }
 
-/// Internal transport used by the workspace EVM construction module.
-#[doc(hidden)]
-pub mod construction {
-    use super::*;
-
-    /// Environment, transaction, and optional initial-fork material prepared atomically from one
-    /// resolved profile.
-    pub struct PreparedEvmOpts<SPEC, BLOCK, TX> {
-        pub evm_env: EvmEnv<SPEC, BLOCK>,
-        pub tx_env: TX,
-        pub fork_block_number: Option<BlockNumber>,
-        pub fork: Option<CreateFork>,
-    }
-
-    /// Prepares the core inputs consumed by `foundry-evm` construction.
-    pub async fn prepare<
-        SPEC: Into<SpecId> + Default + Copy,
-        BLOCK: FoundryBlock + Default,
-        TX: FoundryTransaction + Default,
-    >(
-        evm_opts: &EvmOpts,
-        config: Option<&Config>,
-        network_profile: ResolvedNetworkProfile,
-    ) -> eyre::Result<PreparedEvmOpts<SPEC, BLOCK, TX>> {
-        let (evm_env, tx_env, fork_block_number) =
-            evm_opts.env_for_profile(network_profile).await?;
-        let fork = config.and_then(|config| {
-            evm_opts.get_fork_for_profile(
-                config,
-                evm_env.cfg_env.chain_id,
-                fork_block_number,
-                network_profile,
-            )
-        });
-        Ok(PreparedEvmOpts { evm_env, tx_env, fork_block_number, fork })
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use revm::context::{BlockEnv, TxEnv};
 
     use super::*;
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn infer_network_default_anvil_selects_ethereum() {
-        let (_api, handle) = anvil::spawn(anvil::NodeConfig::test()).await;
-
-        let config = Config::figment();
-        let mut evm_opts = config.extract::<EvmOpts>().unwrap();
-        evm_opts.fork_url = Some(handle.http_endpoint());
-        assert_eq!(evm_opts.networks, NetworkConfigs::default());
-
-        evm_opts.infer_network_from_fork().await;
-
-        // Plain anvil (chain id 31337) without tempo flag -> Ethereum (no network flags set).
-        assert!(!evm_opts.networks.is_tempo());
-        assert!(!evm_opts.networks.is_optimism());
-        assert!(!evm_opts.networks.is_celo());
-        assert_eq!(evm_opts.networks, NetworkConfigs::default());
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn infer_network_tempo_anvil_via_node_info() {
-        let (_api, handle) = anvil::spawn(anvil::NodeConfig::test_tempo()).await;
-
-        let config = Config::figment();
-        let mut evm_opts = config.extract::<EvmOpts>().unwrap();
-        evm_opts.fork_url = Some(handle.http_endpoint());
-        // Networks not set -> should query anvil_nodeInfo to discover tempo.
-        assert_eq!(evm_opts.networks, NetworkConfigs::default());
-
-        evm_opts.infer_network_from_fork().await;
-
-        assert!(evm_opts.networks.is_tempo(), "should detect tempo via anvil_nodeInfo");
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn infer_network_tempo_anvil_skips_rpc_when_already_set() {
-        // Use a URL that would fail if any RPC call were attempted (connection refused).
-        // This proves the early-return guard prevents all network requests.
-        let config = Config::figment();
-        let mut evm_opts = config.extract::<EvmOpts>().unwrap();
-        evm_opts.fork_url = Some("http://127.0.0.1:1".to_string());
-        // Explicitly set tempo before calling infer (simulates --tempo CLI flag).
-        evm_opts.networks = NetworkConfigs::with_tempo();
-
-        evm_opts.infer_network_from_fork().await;
-
-        // Should still be tempo, the early-return guard skips the RPC call.
-        assert!(evm_opts.networks.is_tempo());
-    }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn get_fork_pins_block_number_from_env() {
@@ -600,28 +451,33 @@ mod tests {
         // Explicitly leave fork_block_number as None to simulate --fork-url without --block-number
         assert!(evm_opts.fork_block_number.is_none());
 
-        // Fetch the environment (this resolves "latest" to an actual block number)
-        let (evm_env, _, fork_block) = evm_opts.env::<SpecId, BlockEnv, TxEnv>().await.unwrap();
+        // Resolve the command profile (no network requests: no identity source is configured)
+        // and prepare the environment; this resolves "latest" to an actual block number.
+        let resolved = resolution::CommandProfileResolution::new()
+            .resolve_evm_opts(evm_opts, resolution::NetworkIntent::new())
+            .unwrap();
+        let prepared =
+            resolved.prepare::<SpecId, BlockEnv, TxEnv>(Some(&Config::default())).await.unwrap();
+        let fork_block = prepared.fork_block_number;
         assert!(fork_block.is_some(), "should have resolved a fork block number");
         let resolved_block = fork_block.unwrap();
         assert!(resolved_block > 0, "should have resolved to a real block number");
 
         // Create the fork - this should pin the block number
-        let fork =
-            evm_opts.get_fork(&Config::default(), evm_env.cfg_env.chain_id, fork_block).unwrap();
+        let fork = prepared.fork.expect("fork material should be prepared");
 
         // The fork's evm_opts should now have fork_block_number set to the resolved block
         assert_eq!(
             fork.evm_opts.fork_block_number,
             Some(resolved_block),
-            "get_fork should pin fork_block_number to the block from env"
+            "prepare should pin fork_block_number to the block from env"
         );
     }
 
     // Regression test for https://github.com/foundry-rs/foundry/issues/13576
     // On Arbitrum, `block_env.number` is remapped to the L1 block number by
     // `apply_chain_and_block_specific_env_changes`. The fork block number returned
-    // by `env()` must be the actual L2 block number, not the remapped L1 value.
+    // by `prepare()` must be the actual L2 block number, not the remapped L1 value.
     #[tokio::test(flavor = "multi_thread")]
     async fn flaky_get_fork_uses_l2_block_number_on_arbitrum() {
         let endpoint =
@@ -632,26 +488,29 @@ mod tests {
         evm_opts.fork_url = Some(endpoint.clone());
         assert!(evm_opts.fork_block_number.is_none());
 
-        let (evm_env, _, fork_block) = evm_opts.env::<SpecId, BlockEnv, TxEnv>().await.unwrap();
-        let fork_block = fork_block.expect("should have resolved a fork block number");
+        let resolved = resolution::CommandProfileResolution::new()
+            .resolve_evm_opts(evm_opts, resolution::NetworkIntent::new())
+            .unwrap();
+        let prepared =
+            resolved.prepare::<SpecId, BlockEnv, TxEnv>(Some(&Config::default())).await.unwrap();
+        let fork_block =
+            prepared.fork_block_number.expect("should have resolved a fork block number");
 
         // On Arbitrum, block_env.number is the L1 block number (much smaller).
         // The fork_block should be the actual L2 block number (much larger).
-        let block_env_number: u64 = evm_env.block_env.number.to();
+        let block_env_number: u64 = prepared.evm_env.block_env.number.to();
         assert!(
             fork_block > block_env_number,
             "fork_block ({fork_block}) should be the L2 block, which is larger than \
              block_env.number ({block_env_number}) which is the L1 block on Arbitrum"
         );
 
-        // Verify get_fork pins to the correct L2 block number
-        let fork = evm_opts
-            .get_fork(&Config::default(), evm_env.cfg_env.chain_id, Some(fork_block))
-            .unwrap();
+        // Verify the prepared fork pins to the correct L2 block number.
+        let fork = prepared.fork.expect("fork material should be prepared");
         assert_eq!(
             fork.evm_opts.fork_block_number,
             Some(fork_block),
-            "get_fork should pin to the L2 block number, not the L1 block number"
+            "prepare should pin to the L2 block number, not the L1 block number"
         );
     }
 
@@ -665,16 +524,19 @@ mod tests {
         // Set an explicit block number
         evm_opts.fork_block_number = Some(12345678);
 
-        let (evm_env, _, fork_block) = evm_opts.env::<SpecId, BlockEnv, TxEnv>().await.unwrap();
+        let resolved = resolution::CommandProfileResolution::new()
+            .resolve_evm_opts(evm_opts, resolution::NetworkIntent::new())
+            .unwrap();
+        let prepared =
+            resolved.prepare::<SpecId, BlockEnv, TxEnv>(Some(&Config::default())).await.unwrap();
 
-        let fork =
-            evm_opts.get_fork(&Config::default(), evm_env.cfg_env.chain_id, fork_block).unwrap();
+        let fork = prepared.fork.expect("fork material should be prepared");
 
         // Should preserve the explicit block number, not override it
         assert_eq!(
             fork.evm_opts.fork_block_number,
             Some(12345678),
-            "get_fork should preserve explicitly set fork_block_number"
+            "prepare should preserve explicitly set fork_block_number"
         );
     }
 }

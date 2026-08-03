@@ -1,11 +1,14 @@
 //! Canonical command-owned network profile resolution.
 
 use super::EvmOpts;
+use crate::{EvmEnv, FoundryBlock, FoundryTransaction, fork::CreateFork};
 use alloy_network::AnyNetwork;
-use alloy_primitives::ChainId;
+use alloy_primitives::{BlockNumber, ChainId};
 use alloy_provider::{Provider, RootProvider};
 use alloy_rpc_types::anvil::NodeInfo;
+use foundry_config::Config;
 use foundry_evm_networks::{EvmFamily, NetworkConfigs, NetworkVariant, ResolvedNetworkProfile};
+use revm::primitives::hardfork::SpecId;
 use std::fmt;
 use thiserror::Error;
 
@@ -283,7 +286,9 @@ impl AsyncForkIdentitySource for RpcForkIdentitySource {
         }
 
         let Some(provider) = &self.provider else {
-            return Err(ForkIdentityError::Unavailable("fork URL is not configured".to_string()));
+            // No fork endpoint is configured: there is no identity evidence to request. The
+            // resolver treats this as a clean fallback to the configured or default profile.
+            return Ok(None);
         };
 
         let chain_id = provider.get_chain_id().await.map_err(|_| {
@@ -412,6 +417,46 @@ impl ResolvedEvmOpts {
         self.evm_opts.sender = sender;
         self
     }
+
+    /// Prepares environment, transaction, and optional initial-fork material atomically from
+    /// this resolved profile.
+    ///
+    /// When `config` is supplied, fork material pins the resolved fork block so subsequent fork
+    /// operations use the same block. On some L2s (e.g., Arbitrum) `block_env.number` is remapped
+    /// to the L1 block number, so `fork_block_number` carries the original L2 block value.
+    pub async fn prepare<
+        SPEC: Into<SpecId> + Default + Copy,
+        BLOCK: FoundryBlock + Default,
+        TX: FoundryTransaction + Default,
+    >(
+        &self,
+        config: Option<&Config>,
+    ) -> eyre::Result<PreparedEvmOpts<SPEC, BLOCK, TX>> {
+        let (evm_env, tx_env, fork_block_number) =
+            self.evm_opts.env_for_profile(self.network_profile).await?;
+        let fork = config.and_then(|config| {
+            self.evm_opts.get_fork_for_profile(
+                config,
+                evm_env.cfg_env.chain_id,
+                fork_block_number,
+                self.network_profile,
+            )
+        });
+        Ok(PreparedEvmOpts { evm_env, tx_env, fork_block_number, fork })
+    }
+}
+
+/// Environment, transaction, and optional initial-fork material prepared atomically from one
+/// resolved profile.
+pub struct PreparedEvmOpts<SPEC, BLOCK, TX> {
+    /// Prepared environment.
+    pub evm_env: EvmEnv<SPEC, BLOCK>,
+    /// Prepared transaction environment.
+    pub tx_env: TX,
+    /// Actual fork block number resolved from the fork endpoint, if forked.
+    pub fork_block_number: Option<BlockNumber>,
+    /// Initial fork material, when forked and a config was supplied.
+    pub fork: Option<CreateFork>,
 }
 
 /// Canonical command profile resolver.
@@ -885,6 +930,21 @@ mod tests {
         let resolved = resolution.resolve_evm_opts(evm_opts, NetworkIntent::new()).unwrap();
 
         assert!(resolved.has_fork());
+        assert_eq!(resolved.network_profile().name(), "ethereum");
+    }
+
+    #[tokio::test]
+    async fn rpc_adapter_without_fork_url_has_no_identity() {
+        let source = RpcForkIdentitySource::from_evm_opts(&opts());
+        let mut resolution = CommandProfileResolution::with_fork_identity_source(source);
+
+        // Plain execution (e.g. `forge test` without a fork URL or explicit network selection)
+        // must fall back to Ethereum instead of failing on a missing identity transport.
+        let resolved = resolution
+            .resolve_evm_opts_async(opts(), NetworkIntent::new().with_fork_identity())
+            .await
+            .unwrap();
+
         assert_eq!(resolved.network_profile().name(), "ethereum");
     }
 
