@@ -19,6 +19,8 @@ use serde::{Deserialize, Serialize};
 use std::fmt::Write;
 use url::Url;
 
+pub mod resolution;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct EvmOpts {
     /// The EVM environment configuration.

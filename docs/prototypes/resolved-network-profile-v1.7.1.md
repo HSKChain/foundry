@@ -2,6 +2,16 @@
 
 > 状态：issue #28 的设计原型。本文回答 constructor/transport 问题；不实现 production
 > runtime seam。
+>
+> 后续 architecture contract 已将 caller-owned 显式 transport 深化为 EVM construction module。
+> 关于 `_with_network_profile` methods、backend/inspector/decoder assembly 与 compatibility 的内容，
+> 以 [`evm-construction-module-v1.7.1.md`](./evm-construction-module-v1.7.1.md) 为准。
+>
+> command 侧 selector precedence、chain/fork inference 与 exactly-once resolution 又进一步深化为
+> command profile resolution module。关于 `NetworkIntent`、opaque `ResolvedEvmOpts`、fail-closed
+> fork identity 与旧 mutation helper hard cutover，以
+> [`command-profile-resolution-module-v1.7.1.md`](./command-profile-resolution-module-v1.7.1.md)
+> 为准。
 
 ## 问题与结论
 

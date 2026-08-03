@@ -724,6 +724,11 @@ impl NetworkConfigs {
         Self { network: Some(NetworkVariant::HashKey), ..Default::default() }
     }
 
+    /// Returns whether a network selector or legacy network flag was explicitly configured.
+    pub const fn has_explicit_selection(&self) -> bool {
+        self.network.is_some() || self.celo || self.optimism || self.tempo
+    }
+
     pub const fn is_optimism(&self) -> bool {
         (*self).resolve().is_optimism()
     }
@@ -793,6 +798,22 @@ impl NetworkConfigs {
 
     pub fn bypass_prevrandao(&self, chain_id: u64) -> bool {
         self.resolve().bypass_prevrandao(chain_id)
+    }
+
+    /// Returns the canonical profile configuration for a known chain identity.
+    pub fn from_known_chain_id(chain_id: u64) -> Option<Self> {
+        let chain = Chain::from_id(chain_id);
+        if chain.is_tempo() {
+            Some(Self::with_tempo())
+        } else if matches!(chain.named(), Some(NamedChain::Celo | NamedChain::CeloSepolia)) {
+            Some(Self::with_celo())
+        } else if chain.is_optimism() {
+            Some(Self::with_optimism())
+        } else if chain.is_ethereum() {
+            Some(Self::default())
+        } else {
+            None
+        }
     }
 
     pub fn with_chain_id(self, chain_id: u64) -> Self {
@@ -878,7 +899,9 @@ impl NetworkConfigs {
 impl From<NetworkVariant> for NetworkConfigs {
     fn from(network: NetworkVariant) -> Self {
         match network {
-            NetworkVariant::Ethereum => Self::default(),
+            NetworkVariant::Ethereum => {
+                Self { network: Some(NetworkVariant::Ethereum), ..Default::default() }
+            }
             NetworkVariant::Optimism => {
                 Self { network: Some(network), optimism: true, ..Default::default() }
             }
