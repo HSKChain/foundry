@@ -3,7 +3,7 @@
 use alloy_primitives::{Address, B256, Bytes, U256, address, hex, keccak256};
 use alloy_sol_types::{SolCall, SolValue, sol};
 use anvil::NodeConfig;
-use foundry_evm_networks::NetworkConfigs;
+use foundry_evm_networks::{NetworkConfigs, NetworkTraceIdentity};
 use foundry_test_utils::{str, util::OutputExt};
 
 const DEVELOPMENT_ADMIN: Address = address!("0xCB00000000000000000000000000000000000000");
@@ -11,9 +11,6 @@ const CREATOR: Address = address!("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
 const RECIPIENT: Address = address!("0x70997970C51812dc3A010C7d01b50e0d17dc79C8");
 const CREATOR_PRIVATE_KEY: &str =
     "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
-const B20_FACTORY: Address = address!("B20F000000000000000000000000000000000000");
-const B20_ACTIVATION_REGISTRY: Address = address!("8453000000000000000000000000000000000001");
-const B20_POLICY_REGISTRY: Address = address!("8453000000000000000000000000000000000002");
 const B20_ASSET_FEATURE_SLOT: U256 = alloy_primitives::uint!(
     0x819420403a306232adb8ee78d9f35b5090371155b34376cf9b020e30029278e5_U256
 );
@@ -62,9 +59,11 @@ network = "hashkey"
     );
     cmd.set_current_dir(prj.root());
 
-    let factory = B20_FACTORY.to_string();
-    let activation_registry = B20_ACTIVATION_REGISTRY.to_string();
-    let policy_registry = B20_POLICY_REGISTRY.to_string();
+    let factory = NetworkTraceIdentity::B20Factory.fixed_address().unwrap().to_string();
+    let activation_registry =
+        NetworkTraceIdentity::B20ActivationRegistry.fixed_address().unwrap().to_string();
+    let policy_registry =
+        NetworkTraceIdentity::B20PolicyRegistry.fixed_address().unwrap().to_string();
     let asset_feature = keccak256("base.b20_asset").to_string();
     let asset_feature_slot = format!("{:#x}", B20_ASSET_FEATURE_SLOT);
     let recipient = RECIPIENT.to_string();

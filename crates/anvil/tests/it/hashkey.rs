@@ -150,6 +150,12 @@ async fn hashkey_custom_genesis_preserves_unowned_state() {
               "code": "0xdead",
               "storage": {"0x0000000000000000000000000000000000000000000000000000000000000001": "0x0000000000000000000000000000000000000000000000000000000000000007"}
             },
+            "8453000000000000000000000000000000000001": {
+              "balance": "0x1",
+              "nonce": "0x8",
+              "code": "0xbeef",
+              "storage": {"0x8c5327ddcca092db72284503162323c6e8d392394b1d5c71991227bbc26f7c07": "0x0000000000000000000000000000000000000000000000000000000000000009"}
+            },
             "4200000000000000000000000000000000000042": {
               "balance": "0x2b",
               "storage": {"0x0000000000000000000000000000000000000000000000000000000000000002": "0x0000000000000000000000000000000000000000000000000000000000000008"}
@@ -170,6 +176,7 @@ async fn hashkey_custom_genesis_preserves_unowned_state() {
     let provider = handle.http_provider();
 
     assert_eq!(provider.get_balance(B20_FACTORY).await.unwrap(), U256::from(42));
+    assert_eq!(provider.get_transaction_count(B20_FACTORY).await.unwrap(), 1);
     assert_eq!(provider.get_code_at(B20_FACTORY).await.unwrap(), Bytes::from_static(&[0xef]));
     assert_eq!(provider.get_storage_at(B20_FACTORY, U256::from(1)).await.unwrap(), U256::from(7));
     assert_eq!(
@@ -182,6 +189,12 @@ async fn hashkey_custom_genesis_preserves_unowned_state() {
             .await
             .unwrap(),
         U256::from(8)
+    );
+    assert_eq!(provider.get_balance(B20_ACTIVATION_REGISTRY).await.unwrap(), U256::from(1));
+    assert_eq!(provider.get_transaction_count(B20_ACTIVATION_REGISTRY).await.unwrap(), 1);
+    assert_eq!(
+        provider.get_code_at(B20_ACTIVATION_REGISTRY).await.unwrap(),
+        Bytes::from_static(&[0xef])
     );
     assert_eq!(
         provider.get_storage_at(B20_ACTIVATION_REGISTRY, B20_FEATURE_SLOTS[0]).await.unwrap(),
