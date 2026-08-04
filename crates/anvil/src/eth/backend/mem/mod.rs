@@ -202,7 +202,7 @@ impl<T> BlockRequest<T> {
     }
 }
 
-/// Gives access to the [revm::Database]
+/// Adapts Anvil database mutations to profile-owned local genesis.
 struct AnvilLocalGenesisState<'a>(&'a mut dyn Db);
 
 impl LocalGenesisState for AnvilLocalGenesisState<'_> {
@@ -232,6 +232,7 @@ impl LocalGenesisState for AnvilLocalGenesisState<'_> {
     }
 }
 
+/// Gives access to the [revm::Database].
 pub struct Backend<N: Network> {
     /// Access to [`revm::Database`] abstraction.
     ///
@@ -1973,6 +1974,7 @@ impl<N: Network> Backend<N> {
         db: Arc<AsyncRwLock<Box<dyn Db>>>,
         env: Arc<RwLock<EvmEnv>>,
         network_profile: ResolvedNetworkProfile,
+        genesis_target: ProfileGenesisTarget,
         genesis: GenesisConfig,
         fees: FeeManager,
         fork: Arc<RwLock<Option<ClientFork>>>,
@@ -2073,12 +2075,7 @@ impl<N: Network> Backend<N> {
         }
 
         // Note: this can only fail in forking mode, in which case we can't recover
-        let target = if backend.fork.read().is_some() {
-            ProfileGenesisTarget::RemoteFork
-        } else {
-            ProfileGenesisTarget::FreshStandalone
-        };
-        backend.apply_genesis(target).await.wrap_err("failed to create genesis")?;
+        backend.apply_genesis(genesis_target).await.wrap_err("failed to create genesis")?;
         Ok(backend)
     }
 

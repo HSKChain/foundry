@@ -12,6 +12,7 @@ use std::{
 #[cfg(feature = "cli")]
 use crate::utils::http_provider;
 use alloy_eips::eip7910::EthConfig;
+use alloy_genesis::Genesis;
 use alloy_network::{AnyNetwork, TransactionBuilder};
 use alloy_primitives::{Address, Bytes, U256, address};
 use alloy_provider::Provider;
@@ -86,8 +87,18 @@ async fn hashkey_standalone_reset_and_inventory() {
         spawn(NodeConfig::test().with_networks(NetworkConfigs::with_hashkey())).await;
     let provider = handle.http_provider();
     assert_hashkey_baseline(&provider).await;
-    api.evm_snapshot().await.unwrap();
-    assert_hashkey_baseline(&provider).await;
+    api.anvil_set_storage_at(B20_ACTIVATION_REGISTRY, B20_FEATURE_SLOTS[2], U256::ZERO.into())
+        .await
+        .unwrap();
+    let snapshot = api.evm_snapshot().await.unwrap();
+    api.anvil_set_storage_at(B20_ACTIVATION_REGISTRY, B20_FEATURE_SLOTS[2], U256::from(7).into())
+        .await
+        .unwrap();
+    assert!(api.evm_revert(snapshot).await.unwrap());
+    assert_eq!(
+        provider.get_storage_at(B20_ACTIVATION_REGISTRY, B20_FEATURE_SLOTS[2]).await.unwrap(),
+        U256::ZERO
+    );
 
     let config: EthConfig = provider.client().request("eth_config", ()).await.unwrap();
     for (name, address) in [
@@ -110,6 +121,72 @@ async fn hashkey_standalone_reset_and_inventory() {
     api.anvil_reset(None).await.unwrap();
 
     assert_hashkey_baseline(&provider).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hashkey_custom_genesis_preserves_unowned_state() {
+    let genesis: Genesis = serde_json::from_str(
+        r#"{
+          "config": {
+            "chainId": 31337,
+            "homesteadBlock": 0,
+            "eip150Block": 0,
+            "eip155Block": 0,
+            "eip158Block": 0,
+            "byzantiumBlock": 0,
+            "ethash": {}
+          },
+          "nonce": "0x0",
+          "timestamp": "0x0",
+          "extraData": "0x",
+          "gasLimit": "0x80000000",
+          "difficulty": "0x1",
+          "mixHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+          "coinbase": "0x0000000000000000000000000000000000000000",
+          "alloc": {
+            "b20f000000000000000000000000000000000000": {
+              "balance": "0x2a",
+              "nonce": "0x9",
+              "code": "0xdead",
+              "storage": {"0x0000000000000000000000000000000000000000000000000000000000000001": "0x0000000000000000000000000000000000000000000000000000000000000007"}
+            },
+            "4200000000000000000000000000000000000042": {
+              "balance": "0x2b",
+              "storage": {"0x0000000000000000000000000000000000000000000000000000000000000002": "0x0000000000000000000000000000000000000000000000000000000000000008"}
+            }
+          },
+          "number": 0,
+          "gasUsed": "0x0",
+          "parentHash": "0x0000000000000000000000000000000000000000000000000000000000000000"
+        }"#,
+    )
+    .unwrap();
+    let (_api, handle) = spawn(
+        NodeConfig::test()
+            .with_networks(NetworkConfigs::with_hashkey())
+            .with_genesis(Some(genesis)),
+    )
+    .await;
+    let provider = handle.http_provider();
+
+    assert_eq!(provider.get_balance(B20_FACTORY).await.unwrap(), U256::from(42));
+    assert_eq!(provider.get_code_at(B20_FACTORY).await.unwrap(), Bytes::from_static(&[0xef]));
+    assert_eq!(provider.get_storage_at(B20_FACTORY, U256::from(1)).await.unwrap(), U256::from(7));
+    assert_eq!(
+        provider.get_balance(address!("4200000000000000000000000000000000000042")).await.unwrap(),
+        U256::from(43)
+    );
+    assert_eq!(
+        provider
+            .get_storage_at(address!("4200000000000000000000000000000000000042"), U256::from(2))
+            .await
+            .unwrap(),
+        U256::from(8)
+    );
+    assert_eq!(
+        provider.get_storage_at(B20_ACTIVATION_REGISTRY, B20_FEATURE_SLOTS[0]).await.unwrap(),
+        U256::from(1)
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

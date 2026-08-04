@@ -72,7 +72,7 @@ use foundry_evm::{
     traces::{CallTraceDecoderBuilder, identifier::SignaturesIdentifier},
     utils::get_blob_params,
 };
-use foundry_evm_networks::{NetworkConfigs, ResolvedNetworkProfile};
+use foundry_evm_networks::{NetworkConfigs, ProfileGenesisTarget, ResolvedNetworkProfile};
 
 /// Default port the rpc will open
 pub const NODE_PORT: u16 = 8545;
@@ -1187,12 +1187,21 @@ impl NodeConfig {
             base_fee_params,
         );
 
-        let (db, fork): (Arc<TokioRwLock<Box<dyn Db>>>, Option<ClientFork>) =
-            if let Some(eth_rpc_url) = self.fork_urls.first().cloned() {
-                self.setup_fork_db(eth_rpc_url, &mut evm_env, &fees, network_profile).await?
-            } else {
-                (Arc::new(TokioRwLock::new(Box::<MemDb>::default())), None)
-            };
+        let (db, fork, genesis_target): (
+            Arc<TokioRwLock<Box<dyn Db>>>,
+            Option<ClientFork>,
+            ProfileGenesisTarget,
+        ) = if let Some(eth_rpc_url) = self.fork_urls.first().cloned() {
+            let (db, fork) =
+                self.setup_fork_db(eth_rpc_url, &mut evm_env, &fees, network_profile).await?;
+            (db, fork, ProfileGenesisTarget::RemoteFork)
+        } else {
+            (
+                Arc::new(TokioRwLock::new(Box::<MemDb>::default())),
+                None,
+                ProfileGenesisTarget::FreshStandalone,
+            )
+        };
 
         // if provided use all settings of `genesis.json`
         if let Some(ref genesis) = self.genesis {
@@ -1235,6 +1244,7 @@ impl NodeConfig {
             db,
             Arc::new(RwLock::new(evm_env)),
             network_profile,
+            genesis_target,
             genesis,
             fees,
             Arc::new(RwLock::new(fork)),
