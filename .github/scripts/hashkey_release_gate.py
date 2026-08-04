@@ -292,13 +292,50 @@ def validate_release_files(root: Path) -> list[str]:
 
     release_workflow = (root / ".github/workflows/release.yml").read_text(encoding="utf-8")
     for required in (
-        ".github/scripts/hashkey-artifact-smoke.sh",
-        ".github/scripts/hashkey-release-gate.sh all",
-        "--write-release-metadata",
+        ".github/scripts/hashkey-release-gate.sh source",
+        ".github/scripts/hashkey-release-gate.sh artifact",
+        "finalize-release:",
         "hashkey-release-metadata.json",
     ):
         if required not in release_workflow:
             errors.append(f"release workflow must include {required}")
+    for forbidden in (
+        ".github/scripts/hashkey-release-gate.sh all",
+        ".github/scripts/hashkey-artifact-smoke.sh",
+        " basic",
+        " execution",
+    ):
+        if forbidden in release_workflow:
+            errors.append(f"release workflow must not include legacy artifact interface {forbidden}")
+
+    finalize_index = release_workflow.find("  finalize-release:")
+    if finalize_index < 0:
+        finalize_index = len(release_workflow)
+    pre_finalize = release_workflow[:finalize_index]
+    if "gh release create" in pre_finalize or "gh release upload" in pre_finalize:
+        errors.append("release publication must be owned by finalize-release")
+    if "needs: [prepare, release, release-docker]" not in release_workflow:
+        errors.append("finalize-release must depend on prepare, every release matrix job, and Docker")
+    if "needs: [prepare, release]" not in release_workflow:
+        errors.append("release-docker must depend on the complete release matrix")
+
+    expected_targets = set(TARGET_POLICIES)
+    workflow_targets = set(re.findall(r"target:\s*([^\s]+)", release_workflow))
+    if workflow_targets != expected_targets:
+        errors.append("release workflow target matrix must equal the closed artifact target map")
+    if "target: aarch64-unknown-linux-musl\n            svm_target_platform" in release_workflow and "runner: depot-ubuntu-22.04-arm-16" not in release_workflow:
+        errors.append("aarch64-unknown-linux-musl must run on an ARM64 Linux runner")
+    if "Verify native target host" not in release_workflow:
+        errors.append("release workflow must prove native target host architecture")
+
+    ci_workflow = (root / ".github/workflows/ci-hashkey.yml").read_text(encoding="utf-8")
+    if ".github/scripts/hashkey-release-gate.sh source" not in ci_workflow:
+        errors.append("HashKey CI must call the canonical source operation")
+    if ".github/scripts/hashkey-release-gate.sh all" in ci_workflow:
+        errors.append("HashKey CI must not call legacy all")
+    makefile = (root / "Makefile").read_text(encoding="utf-8")
+    if ".github/scripts/hashkey-release-gate.sh source" not in makefile:
+        errors.append("Make must call the canonical source operation")
 
     required_docs = (
         root / "docs/hashkey-b20.md",

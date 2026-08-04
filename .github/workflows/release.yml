@@ -39,8 +39,8 @@ jobs:
           toolchain: "1.95"
       - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-      - name: Run HashKey B20 release gate
-        run: ./.github/scripts/hashkey-release-gate.sh all
+      - name: Run HashKey B20 source evidence gate
+        run: ./.github/scripts/hashkey-release-gate.sh source
 
   prepare:
     name: Prepare release
@@ -104,58 +104,27 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # Create the GitHub release as a draft up-front so that all matrix jobs
-      # only upload assets to an existing draft. With immutable releases
-      # enabled, an immutable release is sealed when it is published, so all
-      # assets must be attached before that. Stable releases are then left as
-      # a draft for a maintainer to publish manually; nightlies are auto-
-      # published by the `publish-nightly` job at the end of the workflow.
-      - name: Create draft release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
-          TAG_NAME: ${{ steps.release_info.outputs.tag_name }}
-          RELEASE_NAME: ${{ steps.release_info.outputs.release_name }}
-          CHANGELOG: ${{ steps.build_changelog.outputs.changelog }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if release_json="$(gh release view "$TAG_NAME" --json isDraft 2>/dev/null)"; then
-            is_draft="$(printf '%s' "$release_json" | grep -o '"isDraft":[^,}]*' | cut -d: -f2 | tr -d ' ')"
-            if [[ "$is_draft" == "true" ]]; then
-              echo "Draft release $TAG_NAME already exists; reusing it."
-              exit 0
-            fi
-            echo "::error::Release $TAG_NAME is already published; cannot upload more assets to an immutable release."
-            exit 1
-          fi
-          notes_file="$(mktemp)"
-          printf '%s' "$CHANGELOG" > "$notes_file"
-          flags=(--draft --verify-tag --title "$RELEASE_NAME" --notes-file "$notes_file")
-          if [[ "$IS_NIGHTLY" == "true" ]]; then
-            flags+=(--prerelease)
-          fi
-          gh release create "$TAG_NAME" "${flags[@]}"
-
-      - name: Publish HashKey release metadata
+      - name: Generate HashKey release metadata
         if: ${{ contains(steps.release_info.outputs.tag_name, '-hsk-b20') }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
-          TAG_NAME: ${{ steps.release_info.outputs.tag_name }}
         shell: bash
         run: |
           set -euo pipefail
-          python3 .github/scripts/hashkey_release_gate.py \
-            --root . \
+          ./.github/scripts/hashkey-release-gate.sh metadata \
             --write-release-metadata hashkey-release-metadata.json \
-            --tag "$TAG_NAME" \
+            --tag "${{ steps.release_info.outputs.tag_name }}" \
             --commit "$GITHUB_SHA"
-          gh release upload "$TAG_NAME" hashkey-release-metadata.json --clobber
+
+      - name: Upload HashKey metadata workflow artifact
+        if: ${{ contains(steps.release_info.outputs.tag_name, '-hsk-b20') }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a0 # v7.0.1
+        with:
+          name: hashkey-release-metadata
+          retention-days: 1
+          path: hashkey-release-metadata.json
 
   release-docker:
     name: Release Docker
-    needs: prepare
+    needs: [prepare, release]
     uses: ./.github/workflows/docker-publish.yml
     permissions:
       attestations: write
@@ -166,10 +135,9 @@ jobs:
     with:
       tag_name: ${{ needs.prepare.outputs.tag_name }}
 
-  # This job uploads assets to the draft release created in `prepare`.
-  # Stable releases stay as drafts for a maintainer to publish manually;
-  # nightlies are auto-published by the `publish-nightly` job below. Either
-  # way, GitHub's immutable-releases setting seals the release at publish.
+  # This matrix produces and validates complete workflow artifact bundles.
+  # Release publication is owned by `finalize-release` after every target and
+  # Docker job succeeds.
   release:
     permissions:
       attestations: write
@@ -204,7 +172,7 @@ jobs:
             svm_target_platform: linux-aarch64
             platform: linux
             arch: arm64
-          - runner: depot-ubuntu-22.04-16
+          - runner: depot-ubuntu-22.04-arm-16
             target: aarch64-unknown-linux-musl
             svm_target_platform: linux-aarch64
             platform: alpine
@@ -233,6 +201,15 @@ jobs:
           toolchain: stable
           targets: ${{ matrix.target }}
       - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444 # v1
+
+      - name: Verify native target host
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${{ matrix.target }}" in
+            aarch64-*) test "$(uname -m)" = "aarch64" -o "$(uname -m)" = "arm64" ;;
+            x86_64-*) test "$(uname -m)" = "x86_64" -o "$(uname -m)" = "amd64" ;;
+          esac
 
       - name: Apple M1 setup
         if: matrix.target == 'aarch64-apple-darwin'
@@ -284,21 +261,6 @@ jobs:
             printf '%s_bin_path=%s\n' "$name" "$bin" >> "$GITHUB_ENV"
           done
 
-      - name: Smoke binary surfaces
-        env:
-          HASHKEY_EXPECTED_TAG: ${{ needs.prepare.outputs.tag_name }}
-          OUT_DIR: target/${{ matrix.target }}/${{ env.RUST_PROFILE }}
-        shell: bash
-        run: .github/scripts/hashkey-artifact-smoke.sh "$OUT_DIR" basic
-
-      - name: Smoke HashKey standalone execution
-        if: matrix.target == 'x86_64-unknown-linux-gnu'
-        env:
-          HASHKEY_EXPECTED_TAG: ${{ needs.prepare.outputs.tag_name }}
-          OUT_DIR: target/${{ matrix.target }}/${{ env.RUST_PROFILE }}
-        shell: bash
-        run: .github/scripts/hashkey-artifact-smoke.sh "$OUT_DIR" execution
-
       - name: Archive binaries
         id: artifacts
         env:
@@ -326,6 +288,19 @@ jobs:
           printf "foundry_sbom=%s\n" "foundry_${VERSION_NAME}_${PLATFORM_NAME}_${ARCH}.spdx.json" >> "$GITHUB_OUTPUT"
           printf "foundry_checksum=%s\n" "foundry_${VERSION_NAME}_${PLATFORM_NAME}_${ARCH}.sha256" >> "$GITHUB_OUTPUT"
           printf "foundry_signature=%s\n" "foundry_${VERSION_NAME}_${PLATFORM_NAME}_${ARCH}.sigstore.json" >> "$GITHUB_OUTPUT"
+
+      - name: Validate final release archive
+        env:
+          ARCHIVE: ${{ steps.artifacts.outputs.file_name }}
+          TARGET: ${{ matrix.target }}
+          TAG_NAME: ${{ needs.prepare.outputs.tag_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./.github/scripts/hashkey-release-gate.sh artifact \
+            --archive "$ARCHIVE" \
+            --target "$TARGET" \
+            --release-tag "$TAG_NAME"
 
       - name: Generate archive checksum
         env:
@@ -355,13 +330,6 @@ jobs:
             --source-name foundry \
             --source-version "$VERSION_NAME" \
             -o spdx-json="$FOUNDRY_SBOM"
-
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          retention-days: 1
-          name: ${{ steps.artifacts.outputs.file_name }}
-          path: ${{ steps.artifacts.outputs.file_name }}
 
       - name: Build man page
         id: man
@@ -424,34 +392,88 @@ jobs:
           set -euo pipefail
           printf '%s\n' "$ATTESTATION_URL" > "$FOUNDRY_ATTESTATION"
 
-      # Upload assets to the draft release created in `prepare`. Stable
-      # releases stay as drafts after this workflow finishes; a maintainer
-      # publishes them manually. Nightlies are auto-published below.
-      - name: Upload assets to draft release
+      - name: Upload complete release asset bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a0 # v7.0.1
+        with:
+          retention-days: 1
+          name: ${{ steps.artifacts.outputs.file_name }}
+          path: |
+            ${{ steps.artifacts.outputs.file_name }}
+            ${{ steps.artifacts.outputs.foundry_attestation }}
+            ${{ steps.artifacts.outputs.foundry_sbom }}
+            ${{ steps.artifacts.outputs.foundry_checksum }}
+            ${{ steps.artifacts.outputs.foundry_signature }}
+            ${{ steps.man.outputs.foundry_man }}
+
+  finalize-release:
+    name: Finalize release after evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [prepare, release, release-docker]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Download complete target bundles
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v7.0.0
+        with:
+          pattern: foundry_*
+          path: bundles
+          merge-multiple: false
+
+      - name: Download HashKey metadata
+        if: ${{ contains(needs.prepare.outputs.tag_name, '-hsk-b20') }}
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v7.0.0
+        with:
+          name: hashkey-release-metadata
+          path: metadata
+
+      - name: Create and populate gated draft release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           TAG_NAME: ${{ needs.prepare.outputs.tag_name }}
-          FILE_NAME: ${{ steps.artifacts.outputs.file_name }}
-          FOUNDRY_ATTESTATION: ${{ steps.artifacts.outputs.foundry_attestation }}
-          FOUNDRY_SBOM: ${{ steps.artifacts.outputs.foundry_sbom }}
-          FOUNDRY_CHECKSUM: ${{ steps.artifacts.outputs.foundry_checksum }}
-          FOUNDRY_SIGNATURE: ${{ steps.artifacts.outputs.foundry_signature }}
-          FOUNDRY_MAN: ${{ steps.man.outputs.foundry_man }}
+          RELEASE_NAME: ${{ needs.prepare.outputs.release_name }}
+          CHANGELOG: ${{ needs.prepare.outputs.changelog }}
+          IS_NIGHTLY: ${{ env.IS_NIGHTLY }}
         shell: bash
         run: |
           set -euo pipefail
-          files=(
-            "$FILE_NAME"
-            "$FOUNDRY_ATTESTATION"
-            "$FOUNDRY_SBOM"
-            "$FOUNDRY_CHECKSUM"
-            "$FOUNDRY_SIGNATURE"
-          )
-          if [[ -n "${FOUNDRY_MAN:-}" ]]; then
-            files+=("$FOUNDRY_MAN")
+          archive_count="$(find bundles -type f \( -name '*.tar.gz' -o -name '*.zip' \) | wc -l)"
+          test "$archive_count" -eq 7
+          if [[ -f metadata/hashkey-release-metadata.json ]]; then
+            python3 .github/scripts/hashkey_release_gate.py \
+              --root . \
+              --metadata metadata/hashkey-release-metadata.json
           fi
-          gh release upload "$TAG_NAME" "${files[@]}" --clobber
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            echo "::error::Release $TAG_NAME already exists; finalize refuses to reuse it."
+            exit 1
+          fi
+          created=0
+          cleanup() {
+            if [[ "$created" == 1 ]]; then
+              gh release delete "$TAG_NAME" --yes || echo "::error::Delete draft $TAG_NAME manually before rerun."
+            fi
+          }
+          trap cleanup EXIT
+          notes_file="$(mktemp)"
+          printf '%s' "$CHANGELOG" > "$notes_file"
+          flags=(--draft --verify-tag --title "$RELEASE_NAME" --notes-file "$notes_file")
+          [[ "$IS_NIGHTLY" == "true" ]] && flags+=(--prerelease)
+          gh release create "$TAG_NAME" "${flags[@]}"
+          created=1
+          files=()
+          while IFS= read -r file; do files+=("$file"); done < <(find bundles -type f -print | sort)
+          if [[ -f metadata/hashkey-release-metadata.json ]]; then
+            files+=(metadata/hashkey-release-metadata.json)
+          fi
+          gh release upload "$TAG_NAME" "${files[@]}"
+          trap - EXIT
 
   # Auto-publish nightly releases once all assets have been uploaded so that
   # foundryup and other consumers see them immediately. Stable releases are
@@ -459,7 +481,7 @@ jobs:
   publish-nightly:
     name: Publish nightly release
     runs-on: ubuntu-latest
-    needs: [prepare, release-docker, release]
+    needs: [prepare, finalize-release]
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     permissions:
       contents: write
@@ -476,7 +498,7 @@ jobs:
   issue:
     name: Open an issue
     runs-on: ubuntu-latest
-    needs: [prepare, release-docker, release, publish-nightly]
+    needs: [prepare, release-docker, finalize-release, publish-nightly]
     if: failure()
     permissions:
       contents: read
