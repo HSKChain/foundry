@@ -41,7 +41,7 @@ use tempo_contracts::precompiles::{
 
 pub mod celo;
 
-pub mod local_genesis;
+mod local_genesis;
 pub use local_genesis::{LocalGenesisState, ProfileGenesisTarget};
 
 /// HashKey B20 standalone local development activation admin.
