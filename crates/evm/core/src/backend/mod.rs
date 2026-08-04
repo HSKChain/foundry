@@ -21,7 +21,9 @@ use alloy_primitives::{Address, B256, TxKind, U256, keccak256, map::AddressSet, 
 use alloy_rpc_types::BlockNumberOrTag;
 use eyre::Context;
 use foundry_common::{SYSTEM_TRANSACTION_TYPE, is_known_system_sender};
-use foundry_evm_networks::{NetworkExecutionContext, ResolvedNetworkProfile};
+use foundry_evm_networks::{
+    LocalGenesisState, NetworkExecutionContext, ProfileGenesisTarget, ResolvedNetworkProfile,
+};
 pub use foundry_fork_db::{BlockchainDb, ForkBlockEnv, SharedBackend, cache::BlockchainDbMeta};
 use revm::{
     Database, DatabaseCommit, JournalEntry,
@@ -55,6 +57,37 @@ pub use snapshot::{BackendStateSnapshot, RevertStateSnapshotAction, StateSnapsho
 
 // A `revm::Database` that is used in forking mode
 type ForkDB<N, B> = CacheDB<SharedBackend<N, B>>;
+
+struct ForgeLocalGenesisState<'a, FEN: FoundryEvmNetwork>(&'a mut Backend<FEN>);
+
+impl<FEN: FoundryEvmNetwork> LocalGenesisState for ForgeLocalGenesisState<'_, FEN> {
+    type Error = eyre::Report;
+
+    fn patch_account(
+        &mut self,
+        address: Address,
+        code: alloy_primitives::Bytes,
+        nonce: u64,
+    ) -> Result<(), Self::Error> {
+        let account = self.0.basic(address)?.unwrap_or_default();
+        let code_hash = keccak256(code.as_ref());
+        self.0.insert_account_info(
+            address,
+            AccountInfo { code: Some(Bytecode::new_raw(code)), code_hash, nonce, ..account },
+        );
+        Ok(())
+    }
+
+    fn set_storage(
+        &mut self,
+        address: Address,
+        slot: U256,
+        value: U256,
+    ) -> Result<(), Self::Error> {
+        self.0.insert_account_storage(address, slot, value)?;
+        Ok(())
+    }
+}
 
 /// Represents a numeric `ForkId` valid only for the existence of the `Backend`.
 ///
@@ -581,6 +614,11 @@ impl<FEN: FoundryEvmNetwork> Backend<FEN> {
             inner,
         };
 
+        let target = if fork.is_some() {
+            ProfileGenesisTarget::RemoteFork
+        } else {
+            ProfileGenesisTarget::FreshStandalone
+        };
         if let Some(fork) = fork {
             let (fork_id, fork, _) = backend.forks.create_fork(fork)?;
             let fork_db = ForkDB::new(fork);
@@ -591,43 +629,16 @@ impl<FEN: FoundryEvmNetwork> Backend<FEN> {
             );
             backend.inner.launched_with_fork = Some((fork_id, fork_ids.0, fork_ids.1));
             backend.active_fork_ids = Some(fork_ids);
-        } else {
-            backend.seed_local_network_state()?;
         }
+
+        let mut state = ForgeLocalGenesisState(&mut backend);
+        network_profile
+            .apply_profile_genesis(target, &mut state)
+            .wrap_err("failed to apply profile-owned local genesis")?;
 
         trace!(target: "backend", forking_mode=? backend.active_fork_ids.is_some(), "created executor backend");
 
         Ok(backend)
-    }
-
-    /// Seeds profile-owned standalone-local state once at backend construction.
-    #[cfg(feature = "hashkey")]
-    fn seed_local_network_state(&mut self) -> eyre::Result<()> {
-        let Some(alloc) = self.network_profile.b20_genesis_alloc() else { return Ok(()) };
-
-        for (address, code_hash, nonce) in alloc.markers {
-            let account = self.basic(address)?.unwrap_or_default();
-            self.insert_account_info(
-                address,
-                AccountInfo {
-                    code: Some(Bytecode::new_raw(alloy_primitives::Bytes::from_static(&[0xef]))),
-                    code_hash,
-                    nonce,
-                    ..account
-                },
-            );
-        }
-        for (address, slot, value) in alloc.feature_seeds {
-            self.insert_account_storage(address, slot, value)?;
-        }
-
-        Ok(())
-    }
-
-    /// No profile-owned local state exists without the HashKey capability.
-    #[cfg(not(feature = "hashkey"))]
-    const fn seed_local_network_state(&mut self) -> eyre::Result<()> {
-        Ok(())
     }
 
     /// Creates a new instance of `Backend` with fork added to the fork database and sets the fork
@@ -2314,7 +2325,7 @@ mod tests {
     #[cfg(feature = "hashkey")]
     use crate::backend::DatabaseExt;
     use crate::{backend::Backend, evm::EthEvmNetwork, opts::EvmOpts};
-    use alloy_primitives::{U256, address};
+    use alloy_primitives::{U256, address, keccak256};
     use alloy_provider::Provider;
     use foundry_common::provider::get_http_provider;
     use foundry_config::{Config, NamedChain};
@@ -2333,19 +2344,22 @@ mod tests {
         let profile = NetworkConfigs::with_hashkey().resolve();
         let mut backend = super::construction::spawn::<EthEvmNetwork>(None, profile).unwrap();
         let b20_factory = address!("B20F000000000000000000000000000000000000");
-        let alloc = profile.b20_genesis_alloc().unwrap();
-
-        for (address, code_hash, nonce) in alloc.markers {
+        let markers = [
+            address!("B20F000000000000000000000000000000000000"),
+            address!("8453000000000000000000000000000000000001"),
+            address!("8453000000000000000000000000000000000002"),
+        ];
+        for address in markers {
             let account = backend.basic_ref(address).unwrap().unwrap();
-            assert_eq!(account.code_hash, code_hash);
-            assert_eq!(account.nonce, nonce);
+            assert_eq!(account.code_hash, keccak256([0xef]));
+            assert_eq!(account.nonce, 1);
             assert_eq!(account.code.unwrap().original_bytes().as_ref(), &[0xef]);
         }
-        for (address, slot, value) in alloc.feature_seeds {
-            assert_eq!(backend.storage_ref(address, slot).unwrap(), value);
-        }
-
-        let (activation_registry, feature_slot, _) = alloc.feature_seeds[0];
+        let activation_registry = address!("8453000000000000000000000000000000000001");
+        let feature_slot = alloy_primitives::uint!(
+            0x8c5327ddcca092db72284503162323c6e8d392394b1d5c71991227bbc26f7c07_U256
+        );
+        assert_eq!(backend.storage_ref(activation_registry, feature_slot).unwrap(), U256::from(1));
         backend.insert_account_storage(activation_registry, feature_slot, U256::ZERO).unwrap();
         let cloned = backend.clone();
         let empty = backend.clone_empty();
