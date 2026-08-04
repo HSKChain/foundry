@@ -10,8 +10,11 @@ import re
 import shlex
 import subprocess
 import sys
+import stat
+import tarfile
 import tempfile
 import tomllib
+import zipfile
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -694,6 +697,170 @@ def run_source_gate(input: SourceGateInput) -> GateOutcome:
         tuple(results),
         all(result.status == "passed" for result in results),
     )
+
+
+MAX_ARCHIVE_MEMBERS = 4
+MAX_ARCHIVE_BYTES = 256 * 1024 * 1024
+
+
+class ArtifactUsageError(ValueError):
+    """The artifact invocation is malformed or unsupported."""
+
+
+class ArtifactEvidenceError(ValueError):
+    """The archive is readable but does not satisfy the artifact contract."""
+
+
+@dataclass(frozen=True)
+class ExtractedArtifact:
+    root: Path
+    binaries: tuple[Path, ...]
+
+
+class _ArtifactAdapter(Protocol):
+    @contextmanager
+    def extract(self) -> ExtractedArtifact: ...
+
+
+def _canonical_archive_name(name: str) -> str:
+    normalized = name.replace("\\", "/")
+    if not normalized or "\x00" in normalized:
+        raise ArtifactEvidenceError("archive member has an invalid name")
+    if normalized.startswith("/") or normalized.startswith("//"):
+        raise ArtifactEvidenceError(f"archive member is absolute: {name}")
+    if re.match(r"^[A-Za-z]:/", normalized):
+        raise ArtifactEvidenceError(f"archive member is drive-qualified: {name}")
+    components = normalized.split("/")
+    if len(components) != 1 or components[0] in {".", ".."}:
+        raise ArtifactEvidenceError(f"archive member is not root-level: {name}")
+    if components[0].rstrip(" .") != components[0]:
+        raise ArtifactEvidenceError(f"archive member has an aliasing suffix: {name}")
+    return components[0]
+
+
+def _check_archive_names(names: list[str], expected: tuple[str, ...]) -> list[str]:
+    if len(names) != MAX_ARCHIVE_MEMBERS:
+        raise ArtifactEvidenceError("archive must contain exactly four members")
+    canonical = [_canonical_archive_name(name) for name in names]
+    if len({name.casefold() for name in canonical}) != len(canonical):
+        raise ArtifactEvidenceError("archive contains a case-fold name collision")
+    if set(canonical) != set(expected):
+        raise ArtifactEvidenceError(
+            f"archive members must be exactly {', '.join(expected)}"
+        )
+    return canonical
+
+
+@dataclass(frozen=True)
+class TarGzArtifactAdapter:
+    archive: Path
+    expected_names: tuple[str, ...] = RELEASE_BINARIES
+    require_executable: bool = True
+
+    @contextmanager
+    def extract(self) -> ExtractedArtifact:
+        try:
+            with tarfile.open(self.archive, mode="r:gz") as bundle:
+                members = bundle.getmembers()
+                canonical = _check_archive_names(
+                    [member.name for member in members], self.expected_names
+                )
+                total_size = 0
+                for member in members:
+                    if not member.isfile() or member.issym() or member.islnk():
+                        raise ArtifactEvidenceError(
+                            f"archive member is not a regular file: {member.name}"
+                        )
+                    if member.size < 0:
+                        raise ArtifactEvidenceError("archive member has a negative size")
+                    total_size += member.size
+                    if total_size > MAX_ARCHIVE_BYTES:
+                        raise ArtifactEvidenceError("archive exceeds the size limit")
+                    if self.require_executable and not member.mode & 0o111:
+                        raise ArtifactEvidenceError(
+                            f"Unix binary is not executable: {member.name}"
+                        )
+                with tempfile.TemporaryDirectory(prefix="hashkey-artifact-") as temporary:
+                    root = Path(temporary)
+                    binaries: list[Path] = []
+                    for member, name in zip(members, canonical):
+                        destination = root / name
+                        source = bundle.extractfile(member)
+                        if source is None:
+                            raise ArtifactEvidenceError(
+                                f"archive member cannot be read: {member.name}"
+                            )
+                        with source, destination.open("wb") as output:
+                            while chunk := source.read(1024 * 1024):
+                                output.write(chunk)
+                        destination.chmod(member.mode & 0o777)
+                        binaries.append(destination)
+                    yield ExtractedArtifact(root, tuple(binaries))
+        except ArtifactEvidenceError:
+            raise
+        except (OSError, EOFError, tarfile.TarError) as error:
+            raise ArtifactEvidenceError(f"invalid tar.gz archive: {error}") from error
+
+
+@dataclass(frozen=True)
+class ZipArtifactAdapter:
+    archive: Path
+    expected_names: tuple[str, ...] = RELEASE_BINARIES
+    require_executable: bool = False
+
+    @contextmanager
+    def extract(self) -> ExtractedArtifact:
+        try:
+            with zipfile.ZipFile(self.archive) as bundle:
+                members = bundle.infolist()
+                canonical = _check_archive_names(
+                    [member.filename for member in members], self.expected_names
+                )
+                total_size = 0
+                for member in members:
+                    if member.flag_bits & 0x1:
+                        raise ArtifactEvidenceError(
+                            f"encrypted archive member: {member.filename}"
+                        )
+                    mode = member.external_attr >> 16
+                    if member.is_dir() or (mode and not stat.S_ISREG(mode)):
+                        raise ArtifactEvidenceError(
+                            f"archive member is not a regular file: {member.filename}"
+                        )
+                    total_size += member.file_size
+                    if total_size > MAX_ARCHIVE_BYTES:
+                        raise ArtifactEvidenceError("archive exceeds the size limit")
+                    if self.require_executable and not mode & 0o111:
+                        raise ArtifactEvidenceError(
+                            f"Windows binary is not executable: {member.filename}"
+                        )
+                with tempfile.TemporaryDirectory(prefix="hashkey-artifact-") as temporary:
+                    root = Path(temporary)
+                    binaries: list[Path] = []
+                    for member, name in zip(members, canonical):
+                        destination = root / name
+                        with bundle.open(member) as source, destination.open("wb") as output:
+                            while chunk := source.read(1024 * 1024):
+                                output.write(chunk)
+                        if self.require_executable:
+                            destination.chmod((member.external_attr >> 16) & 0o777)
+                        binaries.append(destination)
+                    yield ExtractedArtifact(root, tuple(binaries))
+        except ArtifactEvidenceError:
+            raise
+        except (OSError, EOFError, zipfile.BadZipFile, zipfile.LargeZipFile) as error:
+            raise ArtifactEvidenceError(f"invalid zip archive: {error}") from error
+
+
+def artifact_adapter(
+    archive: Path, *, expected_names: tuple[str, ...] = RELEASE_BINARIES
+) -> _ArtifactAdapter:
+    name = archive.name.lower()
+    if name.endswith(".tar.gz"):
+        return TarGzArtifactAdapter(archive, expected_names)
+    if name.endswith(".zip"):
+        return ZipArtifactAdapter(archive, expected_names)
+    raise ArtifactUsageError("archive must use .tar.gz or .zip suffix")
 
 
 def cargo_metadata(root: Path) -> dict[str, Any]:

@@ -6,8 +6,11 @@ import os
 import subprocess
 import sys
 import contextlib
+import io
+import tarfile
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest import mock
 
@@ -161,6 +164,97 @@ class HashKeyReleaseGateTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "submodule"):
                 gate._validate_provided_checkout(checkout)
+
+    def make_tar(self, names=gate.RELEASE_BINARIES, modes=0o755):
+        path = Path(tempfile.mkstemp(suffix=".tar.gz")[1])
+        self.addCleanup(lambda: path.unlink(missing_ok=True))
+        with tarfile.open(path, "w:gz") as archive:
+            for name in names:
+                member = tarfile.TarInfo(name)
+                member.mode = modes
+                payload = name.encode()
+                member.size = len(payload)
+                archive.addfile(member, io.BytesIO(payload))
+        return path
+
+    def make_zip(self, names=gate.RELEASE_BINARIES):
+        path = Path(tempfile.mkstemp(suffix=".zip")[1])
+        self.addCleanup(lambda: path.unlink(missing_ok=True))
+        with zipfile.ZipFile(path, "w") as archive:
+            for name in names:
+                member = zipfile.ZipInfo(name)
+                member.external_attr = 0o100755 << 16
+                archive.writestr(member, name.encode())
+        return path
+
+    def test_tar_and_zip_adapters_extract_only_four_regular_binaries(self):
+        tar_path = self.make_tar()
+        with gate.TarGzArtifactAdapter(tar_path).extract() as extracted:
+            self.assertEqual(tuple(path.name for path in extracted.binaries), gate.RELEASE_BINARIES)
+            root = extracted.root
+            self.assertTrue(all(path.is_file() for path in extracted.binaries))
+            self.assertTrue(all(path.stat().st_mode & 0o111 for path in extracted.binaries))
+        self.assertFalse(root.exists())
+
+        zip_path = self.make_zip()
+        with gate.ZipArtifactAdapter(zip_path).extract() as extracted:
+            self.assertEqual(tuple(path.name for path in extracted.binaries), gate.RELEASE_BINARIES)
+            self.assertTrue(all(path.is_file() for path in extracted.binaries))
+
+    def test_archive_adapters_reject_namespace_and_membership_violations(self):
+        for name in ("../forge", "/forge", "C:\\forge", "dir/forge", "forge ", "FORGE"):
+            path = self.make_tar((name, "cast", "anvil", "chisel"))
+            with self.subTest(name=name), self.assertRaises(gate.ArtifactEvidenceError):
+                with gate.TarGzArtifactAdapter(path).extract():
+                    pass
+
+        for names in (
+            ("forge", "cast", "anvil"),
+            ("forge", "cast", "anvil", "chisel", "extra"),
+            ("forge", "cast", "anvil", "chisel", "chisel"),
+        ):
+            path = self.make_tar(names)
+            with self.subTest(names=names), self.assertRaises(gate.ArtifactEvidenceError):
+                with gate.TarGzArtifactAdapter(path).extract():
+                    pass
+
+    def test_tar_adapter_rejects_links_and_non_executable_binaries(self):
+        path = Path(tempfile.mkstemp(suffix=".tar.gz")[1])
+        self.addCleanup(lambda: path.unlink(missing_ok=True))
+        with tarfile.open(path, "w:gz") as archive:
+            link = tarfile.TarInfo("forge")
+            link.type = tarfile.SYMTYPE
+            link.linkname = "cast"
+            archive.addfile(link)
+            for name in gate.RELEASE_BINARIES[1:]:
+                member = tarfile.TarInfo(name)
+                member.mode = 0o755
+                member.size = 1
+                archive.addfile(member, io.BytesIO(b"x"))
+        with self.assertRaises(gate.ArtifactEvidenceError):
+            with gate.TarGzArtifactAdapter(path).extract():
+                pass
+
+        non_executable = self.make_tar(modes=0o644)
+        with self.assertRaises(gate.ArtifactEvidenceError):
+            with gate.TarGzArtifactAdapter(non_executable).extract():
+                pass
+
+    def test_zip_adapter_rejects_symlink_entries(self):
+        symlink = Path(tempfile.mkstemp(suffix=".zip")[1])
+        self.addCleanup(lambda: symlink.unlink(missing_ok=True))
+        with zipfile.ZipFile(symlink, "w") as archive:
+            for name in gate.RELEASE_BINARIES:
+                info = zipfile.ZipInfo(name)
+                info.external_attr = (0o120777 << 16) if name == "forge" else (0o100755 << 16)
+                archive.writestr(info, b"x")
+        with self.assertRaises(gate.ArtifactEvidenceError):
+            with gate.ZipArtifactAdapter(symlink).extract():
+                pass
+
+    def test_artifact_adapter_rejects_unknown_suffix_as_usage_error(self):
+        with self.assertRaises(gate.ArtifactUsageError):
+            gate.artifact_adapter(Path("release.bin"))
 
     def test_cli_exposes_the_approved_upstream_source(self):
         repository = subprocess.run(
