@@ -4,6 +4,11 @@ test = "./"
 optimizer = true
 optimizer_runs = 200
 via_ir = false
+# The hashkey fixtures under default/hashkey import `forge-std/Test.sol` because they are
+# also embedded into the forge CLI hashkey tests, which run inside a template project with
+# a real forge-std checkout. Inside testdata, the local `utils/Test.sol` helper provides the
+# same surface, so remap forge-std to it instead of vendoring a second copy.
+remappings = ["forge-std/=utils/"]
 ignored_error_codes = [
     1878, # SPDX license identifier not provided
     2018, # Function state mutability can be restricted

@@ -68,7 +68,7 @@ contract B20LifecycleTest is Test {
 
         vm.startPrank(ACTIVATION_ADMIN);
         registry.deactivate(ASSET_FEATURE);
-        assertFalse(registry.isActivated(ASSET_FEATURE), "asset feature still active");
+        assertTrue(!registry.isActivated(ASSET_FEATURE), "asset feature still active");
 
         vm.expectRevert(abi.encodeWithSelector(IActivationRegistry.FeatureNotActivated.selector, ASSET_FEATURE));
         registry.checkActivated(ASSET_FEATURE);
@@ -121,7 +121,7 @@ contract B20LifecycleTest is Test {
         caller.createAssetWithInit(failedSalt, "Failed", "FAIL", address(this), initCalls);
 
         assertEq(predicted.code.length, 0, "failed create left marker");
-        assertFalse(IB20Factory(FACTORY).isB20Initialized(predicted), "failed create left storage");
+        assertTrue(!IB20Factory(FACTORY).isB20Initialized(predicted), "failed create left storage");
         _assertUninitialized(predicted);
 
         IB20 token = IB20(caller.createAsset(keccak256("failed-mint"), "Rollback", "RBK", address(this)));
@@ -145,7 +145,7 @@ contract B20LifecycleTest is Test {
         assertTrue(vm.revertToState(snapshotId), "snapshot revert failed");
 
         assertEq(predicted.code.length, 0, "snapshot retained dynamic marker");
-        assertFalse(IB20Factory(FACTORY).isB20Initialized(predicted), "snapshot retained token state");
+        assertTrue(!IB20Factory(FACTORY).isB20Initialized(predicted), "snapshot retained token state");
         _assertUninitialized(predicted);
         assertEq(FACTORY.code, hex"ef", "snapshot removed factory baseline");
         assertEq(ACTIVATION_REGISTRY.code, hex"ef", "snapshot removed activation baseline");
@@ -161,7 +161,7 @@ contract B20LifecycleTest is Test {
 
     function _assertUninitialized(address token) internal {
         (bool ok, bytes memory data) = token.call(abi.encodeWithSelector(IB20.name.selector));
-        assertFalse(ok, "uninitialized B20 call succeeded");
+        assertTrue(!ok, "uninitialized B20 call succeeded");
         assertEq(data.length, 0, "uninitialized B20 returned typed data");
     }
 }

@@ -95,6 +95,37 @@ pub fn initialize(target: &Path) {
                 .expect("failed to checkout forge-std");
             assert!(output.status.success(), "{output:#?}");
 
+            // `forge init` records the latest forge-std default-branch revision in
+            // foundry.lock. Rewrite the forge-std entry to the pinned revision so the
+            // template lockfile and the checked-out submodule agree; otherwise every
+            // build warns about a revision mismatch and dependency sync follows the
+            // stale lock revision.
+            let forge_std_tag = Command::new("git")
+                .current_dir(prj.root().join("lib/forge-std"))
+                .args(["describe", "--tags", "--exact-match", "HEAD"])
+                .output()
+                .ok()
+                .filter(|output| output.status.success())
+                .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string());
+
+            let foundry_lock_path = prj.root().join("foundry.lock");
+            if let Ok(contents) = fs::read_to_string(&foundry_lock_path)
+                && let Ok(mut lock) = serde_json::from_str::<serde_json::Value>(&contents)
+                && let Some(forge_std) = lock.get_mut("lib/forge-std")
+            {
+                *forge_std = match forge_std_tag {
+                    Some(tag) => serde_json::json!({
+                        "tag": { "name": tag, "rev": FORGE_STD_REVISION }
+                    }),
+                    None => serde_json::json!({ "rev": { "rev": FORGE_STD_REVISION } }),
+                };
+                fs::write(
+                    &foundry_lock_path,
+                    serde_json::to_string_pretty(&lock).expect("serialize foundry.lock") + "\n",
+                )
+                .expect("failed to write foundry.lock");
+            }
+
             // Build the project.
             cmd.forge_fuse().arg("build").assert_success();
 
