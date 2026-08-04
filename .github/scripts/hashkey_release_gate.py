@@ -437,41 +437,62 @@ def _command_group(
     return passed, "; ".join(rendered)
 
 
-@contextmanager
-def _upstream_checkout(
-    root: Path, provided: Path | None
-):
-    if provided is not None:
-        checkout = provided.resolve()
-        try:
-            top_level = Path(
-                subprocess.check_output(
-                    ["git", "-C", str(checkout), "rev-parse", "--show-toplevel"],
-                    text=True,
-                ).strip()
-            ).resolve()
-            revision = subprocess.check_output(
-                ["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True
+def _validate_provided_checkout(checkout: Path) -> None:
+    try:
+        top_level = Path(
+            subprocess.check_output(
+                ["git", "-C", str(checkout), "rev-parse", "--show-toplevel"],
+                text=True,
             ).strip()
-        except (OSError, subprocess.CalledProcessError) as error:
-            raise RuntimeError(f"invalid upstream checkout: {error}") from error
-        if top_level != checkout:
-            raise RuntimeError("provided upstream path must be the checkout root")
-        if revision != APPROVED_REVISION:
-            raise RuntimeError(
-                f"upstream checkout is {revision}, expected {APPROVED_REVISION}"
-            )
-        dirty = subprocess.run(
-            ["git", "-C", str(checkout), "status", "--porcelain", "--ignored"],
+        ).resolve()
+        revision = subprocess.check_output(
+            ["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True
+        ).strip()
+        remote = subprocess.check_output(
+            ["git", "-C", str(checkout), "remote", "get-url", "origin"],
+            text=True,
+        ).strip()
+        status = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(checkout),
+                "status",
+                "--porcelain=v1",
+                "--untracked-files=all",
+                "--ignored=matching",
+            ],
             check=False,
             capture_output=True,
             text=True,
-        ).stdout.strip()
-        if dirty:
-            raise RuntimeError("provided upstream checkout is not clean")
-        if (checkout / ".gitmodules").exists():
-            raise RuntimeError("provided upstream checkout contains .gitmodules")
-        yield checkout, None
+        )
+        index = subprocess.check_output(
+            ["git", "-C", str(checkout), "ls-files", "--stage"], text=True
+        )
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise RuntimeError(f"invalid upstream checkout: {error}") from error
+
+    if top_level != checkout:
+        raise RuntimeError("provided upstream path must be the checkout root")
+    if remote != APPROVED_REPOSITORY:
+        raise RuntimeError(f"upstream remote is {remote}, expected {APPROVED_REPOSITORY}")
+    if revision != APPROVED_REVISION:
+        raise RuntimeError(f"upstream checkout is {revision}, expected {APPROVED_REVISION}")
+    if status.stdout.strip():
+        raise RuntimeError("provided upstream checkout is not clean")
+    if any(line.split(maxsplit=1)[0] == "160000" for line in index.splitlines() if line):
+        raise RuntimeError("provided upstream checkout contains a submodule entry")
+    if (checkout / ".gitmodules").exists():
+        raise RuntimeError("provided upstream checkout contains .gitmodules")
+
+
+@contextmanager
+def _upstream_checkout(root: Path, provided: Path | None):
+    if provided is not None:
+        checkout = provided.resolve()
+        _validate_provided_checkout(checkout)
+        with tempfile.TemporaryDirectory(prefix="hashkey-optimism-target-") as target:
+            yield checkout, Path(target)
         return
 
     with tempfile.TemporaryDirectory(prefix="hashkey-optimism-") as temporary:
@@ -483,16 +504,27 @@ def _upstream_checkout(
                 check=True,
             )
             subprocess.run(
-                ["git", "-C", str(checkout), "fetch", "--quiet", "--depth", "1", "origin", APPROVED_REVISION],
+                [
+                    "git",
+                    "-C",
+                    str(checkout),
+                    "fetch",
+                    "--quiet",
+                    "--depth",
+                    "1",
+                    "origin",
+                    APPROVED_REVISION,
+                ],
                 check=True,
             )
             subprocess.run(
                 ["git", "-C", str(checkout), "checkout", "--quiet", "--detach", "FETCH_HEAD"],
                 check=True,
             )
-        except (OSError, subprocess.CalledProcessError) as error:
+            _validate_provided_checkout(checkout)
+        except (OSError, subprocess.CalledProcessError, RuntimeError) as error:
             raise RuntimeError(f"managed upstream acquisition failed: {error}") from error
-        yield checkout, Path(temporary)
+        yield checkout, Path(temporary) / "target"
 
 
 def _golden_command(upstream: Path, suite: str) -> list[str]:

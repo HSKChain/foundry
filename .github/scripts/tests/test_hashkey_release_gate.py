@@ -113,6 +113,55 @@ class HashKeyReleaseGateTests(unittest.TestCase):
         self.assertTrue(any("--locked" in command for command in commands))
         self.assertTrue(any("--no-fail-fast" in command for command in commands))
 
+    def test_provided_upstream_checkout_accepts_only_clean_root_and_uses_managed_target(self):
+        checkout = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: checkout.rmdir())
+        check_output = mock.patch.object(
+            gate.subprocess,
+            "check_output",
+            side_effect=[
+                f"{checkout}\n",
+                f"{gate.APPROVED_REVISION}\n",
+                f"{gate.APPROVED_REPOSITORY}\n",
+                "100644 abc\\tREADME\\n",
+            ],
+        )
+        status = mock.patch.object(
+            gate.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess([], 0, "", ""),
+        )
+        with check_output, status:
+            with gate._upstream_checkout(Path("."), checkout) as (resolved, target):
+                self.assertEqual(resolved, checkout.resolve())
+                self.assertTrue(target.is_dir())
+                self.assertNotEqual(target, checkout)
+        self.assertTrue(checkout.exists())
+
+    def test_provided_upstream_checkout_rejects_dirty_or_submodule_state(self):
+        checkout = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: checkout.rmdir())
+        common = [
+            f"{checkout}\n",
+            f"{gate.APPROVED_REVISION}\n",
+            f"{gate.APPROVED_REPOSITORY}\n",
+        ]
+        with mock.patch.object(gate.subprocess, "check_output", side_effect=common + ["100644 abc\\tREADME\\n"]), mock.patch.object(
+            gate.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess([], 0, " M README\n", ""),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "not clean"):
+                gate._validate_provided_checkout(checkout)
+
+        with mock.patch.object(gate.subprocess, "check_output", side_effect=common + ["160000 abc\\tlib\\n"]), mock.patch.object(
+            gate.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess([], 0, "", ""),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "submodule"):
+                gate._validate_provided_checkout(checkout)
+
     def test_cli_exposes_the_approved_upstream_source(self):
         repository = subprocess.run(
             [sys.executable, SCRIPT, "--print-approved-repository"],
