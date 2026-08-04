@@ -447,8 +447,11 @@ jobs:
           test "$archive_count" -eq 7
           if [[ -f metadata/hashkey-release-metadata.json ]]; then
             python3 .github/scripts/hashkey_release_gate.py \
+              metadata \
               --root . \
-              --metadata metadata/hashkey-release-metadata.json
+              --validate-release-metadata metadata/hashkey-release-metadata.json \
+              --tag "$TAG_NAME" \
+              --commit "$GITHUB_SHA"
           fi
           if gh release view "$TAG_NAME" >/dev/null 2>&1; then
             echo "::error::Release $TAG_NAME already exists; finalize refuses to reuse it."

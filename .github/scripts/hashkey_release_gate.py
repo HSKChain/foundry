@@ -44,6 +44,8 @@ def workspace_test_environment() -> dict[str, str]:
 APPROVED_REPOSITORY = "https://github.com/HSKChain/optimism"
 APPROVED_REVISION = "efbccbcd344fd4b395032816c0bf5756b3995fb6"
 RELEASE_VERSION = "1.7.1"
+HSK_RELEASE_TAG_PATTERN = rf"v{re.escape(RELEASE_VERSION)}-hsk-b20(?:[.-][0-9A-Za-z]+)*"
+ORDINARY_RELEASE_TAG_PATTERN = r"v[0-9]+\.[0-9]+\.[0-9]+(?:[-.][0-9A-Za-z]+)*"
 RELEASE_BASELINE_REVISION = "4072e48705af9d93e3c0f6e29e93b5e9a40caed8"
 RUST_VERSION = "1.95"
 TEMPO_REPOSITORY = "https://github.com/tempoxyz/tempo"
@@ -296,6 +298,7 @@ def validate_release_files(root: Path) -> list[str]:
         ".github/scripts/hashkey-release-gate.sh artifact",
         "finalize-release:",
         "hashkey-release-metadata.json",
+        "--validate-release-metadata",
     ):
         if required not in release_workflow:
             errors.append(f"release workflow must include {required}")
@@ -364,9 +367,8 @@ def validate_release_files(root: Path) -> list[str]:
 
 
 def build_release_metadata(tag: str, commit: str) -> dict[str, Any]:
-    expected_tag = rf"v{re.escape(RELEASE_VERSION)}-hsk-b20(?:[.-][0-9A-Za-z]+)*"
-    if re.fullmatch(expected_tag, tag) is None:
-        raise ValueError(f"HSK release tag must match {expected_tag}")
+    if re.fullmatch(HSK_RELEASE_TAG_PATTERN, tag) is None:
+        raise ValueError(f"HSK release tag must match {HSK_RELEASE_TAG_PATTERN}")
     if re.fullmatch(r"[0-9a-f]{40}", commit) is None:
         raise ValueError("Foundry release commit must be a full lowercase Git SHA")
 
@@ -403,6 +405,31 @@ def build_release_metadata(tag: str, commit: str) -> dict[str, Any]:
             "features": list(RELEASE_FEATURES),
         },
     }
+
+
+def validate_release_metadata(
+    metadata: dict[str, Any], *, expected_tag: str, expected_commit: str
+) -> list[str]:
+    errors: list[str] = []
+    release = metadata.get("release")
+    if not isinstance(release, dict):
+        return ["release metadata must contain a release object"]
+    if release.get("tag") != expected_tag:
+        errors.append(f"release metadata tag must be {expected_tag}")
+    if release.get("foundry_commit") != expected_commit:
+        errors.append("release metadata commit does not match the gated checkout")
+    if release.get("foundry_version") != RELEASE_VERSION:
+        errors.append(f"release metadata version must be {RELEASE_VERSION}")
+    if release.get("binaries") != list(RELEASE_BINARIES):
+        errors.append("release metadata binary set is invalid")
+    b20 = metadata.get("b20")
+    if not isinstance(b20, dict) or b20.get("repository") != APPROVED_REPOSITORY:
+        errors.append("release metadata B20 repository is invalid")
+    if isinstance(b20, dict) and b20.get("semantic_revision") != APPROVED_REVISION:
+        errors.append("release metadata B20 semantic revision is invalid")
+    if isinstance(b20, dict) and b20.get("binding_revision") != APPROVED_REVISION:
+        errors.append("release metadata B20 binding revision is invalid")
+    return errors
 
 
 def validate_metadata(metadata: dict[str, Any]) -> list[str]:
@@ -982,12 +1009,12 @@ def _expected_binary_names(policy: TargetPolicy) -> tuple[str, ...]:
 
 
 def _release_identity_projection(tag: str) -> tuple[str, str, str | None]:
-    if re.fullmatch(rf"v{re.escape(RELEASE_VERSION)}-hsk-b20(?:[.-][0-9A-Za-z]+)*", tag):
+    if re.fullmatch(HSK_RELEASE_TAG_PATTERN, tag):
         return "hashkey-stable", tag[1:], None
     nightly = re.fullmatch(r"nightly-([0-9a-f]{40})", tag)
     if nightly:
         return "nightly", "nightly", nightly.group(1)
-    if re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+(?:[-.][0-9A-Za-z]+)*", tag):
+    if re.fullmatch(ORDINARY_RELEASE_TAG_PATTERN, tag):
         return "stable", tag[1:], None
     raise ArtifactUsageError(f"unsupported release tag: {tag}")
 
@@ -1139,6 +1166,7 @@ def main() -> int:
     parser.add_argument("--target")
     parser.add_argument("--release-tag")
     parser.add_argument("--write-release-metadata", type=Path)
+    parser.add_argument("--validate-release-metadata", type=Path)
     parser.add_argument("--tag")
     parser.add_argument("--commit")
     args = parser.parse_args()
@@ -1169,6 +1197,22 @@ def main() -> int:
                 file=sys.stderr,
             )
         return 0 if outcome.success else 1
+    if args.validate_release_metadata:
+        if not args.tag or not args.commit:
+            parser.error("--validate-release-metadata requires --tag and --commit")
+        try:
+            metadata = json.loads(args.validate_release_metadata.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            print(f"error: cannot read release metadata: {error}", file=sys.stderr)
+            return 1
+        errors = validate_release_metadata(
+            metadata, expected_tag=args.tag, expected_commit=args.commit
+        )
+        if errors:
+            for error in errors:
+                print(f"error: {error}", file=sys.stderr)
+            return 1
+        return 0
 
     errors = validate_dependency_files(root)
     errors.extend(validate_release_identity(root))

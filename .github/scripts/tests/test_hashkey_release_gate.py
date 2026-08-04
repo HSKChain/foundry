@@ -501,6 +501,21 @@ tempo-revm = {{ path = "../tempo-spike/crates/revm" }}
         with self.assertRaisesRegex(ValueError, "HSK release tag"):
             gate.build_release_metadata("v1.7.1", "1" * 40)
 
+    def test_release_metadata_generation_and_gated_validation_round_trip(self):
+        commit = "2" * 40
+        metadata = gate.build_release_metadata("v1.7.1-hsk-b20", commit)
+        self.assertEqual(
+            gate.validate_release_metadata(
+                metadata, expected_tag="v1.7.1-hsk-b20", expected_commit=commit
+            ),
+            [],
+        )
+        self.assertTrue(
+            gate.validate_release_metadata(
+                metadata, expected_tag="v1.7.1-hsk-b20", expected_commit="3" * 40
+            )
+        )
+
     def test_repository_release_contract_passes(self):
         root = SCRIPT.parents[2]
 
