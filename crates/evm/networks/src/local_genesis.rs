@@ -90,6 +90,7 @@ fn erc7201_namespace_root(namespace: &[u8]) -> U256 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "hashkey")]
     use alloy_primitives::{address, uint};
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -119,12 +120,14 @@ mod tests {
             }
         }
 
+        #[cfg(feature = "hashkey")]
         fn normalized_accounts(&self) -> Vec<(Address, Bytes, u64)> {
             let mut accounts = self.accounts.clone();
             accounts.sort_unstable();
             accounts
         }
 
+        #[cfg(feature = "hashkey")]
         fn normalized_storage(&self) -> Vec<(Address, U256, U256)> {
             let mut storage = self.storage.clone();
             storage.sort_unstable();

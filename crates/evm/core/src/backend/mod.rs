@@ -2325,7 +2325,9 @@ mod tests {
     #[cfg(feature = "hashkey")]
     use crate::backend::DatabaseExt;
     use crate::{backend::Backend, evm::EthEvmNetwork, opts::EvmOpts};
-    use alloy_primitives::{U256, address, keccak256};
+    #[cfg(feature = "hashkey")]
+    use alloy_primitives::keccak256;
+    use alloy_primitives::{U256, address};
     use alloy_provider::Provider;
     use foundry_common::provider::get_http_provider;
     use foundry_config::{Config, NamedChain};
