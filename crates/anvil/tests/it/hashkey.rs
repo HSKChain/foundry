@@ -19,7 +19,22 @@ use alloy_rpc_types::{TransactionRequest, anvil::Forking};
 #[cfg(feature = "cli")]
 use alloy_sol_types::{SolCall, sol};
 use anvil::{NodeConfig, spawn};
-use foundry_evm_networks::{B20GenesisAlloc, NetworkConfigs};
+use foundry_evm_networks::NetworkConfigs;
+
+const B20_FACTORY: Address = address!("B20F000000000000000000000000000000000000");
+const B20_ACTIVATION_REGISTRY: Address = address!("8453000000000000000000000000000000000001");
+const B20_POLICY_REGISTRY: Address = address!("8453000000000000000000000000000000000002");
+const B20_FEATURE_SLOTS: [U256; 3] = [
+    alloy_primitives::uint!(
+        0x8c5327ddcca092db72284503162323c6e8d392394b1d5c71991227bbc26f7c07_U256
+    ),
+    alloy_primitives::uint!(
+        0xca7c276524c5aeaac4d56c8a3d36eb5f9a64f60841fb65b539c99c21ca7df109_U256
+    ),
+    alloy_primitives::uint!(
+        0x819420403a306232adb8ee78d9f35b5090371155b34376cf9b020e30029278e5_U256
+    ),
+];
 
 #[cfg(feature = "cli")]
 sol! {
@@ -53,17 +68,15 @@ fn anvil_binary() -> PathBuf {
         .join("anvil")
 }
 
-fn hashkey_alloc() -> B20GenesisAlloc {
-    NetworkConfigs::with_hashkey().resolve().b20_genesis_alloc().unwrap()
-}
-
 async fn assert_hashkey_baseline(provider: &impl Provider<AnyNetwork>) {
-    let alloc = hashkey_alloc();
-    for (address, _, _) in alloc.markers {
+    for address in [B20_FACTORY, B20_ACTIVATION_REGISTRY, B20_POLICY_REGISTRY] {
         assert_eq!(provider.get_code_at(address).await.unwrap(), Bytes::from_static(&[0xef]));
     }
-    for (address, slot, value) in alloc.feature_seeds {
-        assert_eq!(provider.get_storage_at(address, slot).await.unwrap(), value);
+    for slot in B20_FEATURE_SLOTS {
+        assert_eq!(
+            provider.get_storage_at(B20_ACTIVATION_REGISTRY, slot).await.unwrap(),
+            U256::from(1)
+        );
     }
 }
 
@@ -72,17 +85,15 @@ async fn hashkey_standalone_reset_and_inventory() {
     let (api, handle) =
         spawn(NodeConfig::test().with_networks(NetworkConfigs::with_hashkey())).await;
     let provider = handle.http_provider();
-    let alloc = hashkey_alloc();
-
     assert_hashkey_baseline(&provider).await;
     api.evm_snapshot().await.unwrap();
     assert_hashkey_baseline(&provider).await;
 
     let config: EthConfig = provider.client().request("eth_config", ()).await.unwrap();
     for (name, address) in [
-        ("B20Factory", alloc.markers[0].0),
-        ("B20ActivationRegistry", alloc.markers[1].0),
-        ("B20PolicyRegistry", alloc.markers[2].0),
+        ("B20Factory", B20_FACTORY),
+        ("B20ActivationRegistry", B20_ACTIVATION_REGISTRY),
+        ("B20PolicyRegistry", B20_POLICY_REGISTRY),
     ] {
         assert_eq!(config.current.precompiles.get(name), Some(&address));
     }
@@ -92,8 +103,8 @@ async fn hashkey_standalone_reset_and_inventory() {
         "static inventory must not enumerate dynamic B20 token addresses",
     );
 
-    api.anvil_set_code(alloc.markers[0].0, Bytes::from_static(&[0xde, 0xad])).await.unwrap();
-    api.anvil_set_storage_at(alloc.feature_seeds[2].0, alloc.feature_seeds[2].1, U256::ZERO.into())
+    api.anvil_set_code(B20_FACTORY, Bytes::from_static(&[0xde, 0xad])).await.unwrap();
+    api.anvil_set_storage_at(B20_ACTIVATION_REGISTRY, B20_FEATURE_SLOTS[2], U256::ZERO.into())
         .await
         .unwrap();
     api.anvil_reset(None).await.unwrap();
@@ -161,14 +172,13 @@ async fn hashkey_fork_to_standalone_discards_remote_backing() {
 #[tokio::test(flavor = "multi_thread")]
 async fn hashkey_fork_preserves_remote_state_across_reset() {
     let (source_api, source_handle) = spawn(NodeConfig::test()).await;
-    let alloc = hashkey_alloc();
     let remote_code = Bytes::from_static(&[0xde, 0xad, 0xbe, 0xef]);
     let remote_feature_value = U256::from(7);
-    source_api.anvil_set_code(alloc.markers[0].0, remote_code.clone()).await.unwrap();
+    source_api.anvil_set_code(B20_FACTORY, remote_code.clone()).await.unwrap();
     source_api
         .anvil_set_storage_at(
-            alloc.feature_seeds[2].0,
-            alloc.feature_seeds[2].1,
+            B20_ACTIVATION_REGISTRY,
+            B20_FEATURE_SLOTS[2],
             remote_feature_value.into(),
         )
         .await
@@ -182,18 +192,18 @@ async fn hashkey_fork_preserves_remote_state_across_reset() {
     .await;
     let provider = handle.http_provider();
 
-    assert_eq!(provider.get_code_at(alloc.markers[0].0).await.unwrap(), remote_code);
+    assert_eq!(provider.get_code_at(B20_FACTORY).await.unwrap(), remote_code);
     assert_eq!(
-        provider.get_storage_at(alloc.feature_seeds[2].0, alloc.feature_seeds[2].1).await.unwrap(),
+        provider.get_storage_at(B20_ACTIVATION_REGISTRY, B20_FEATURE_SLOTS[2]).await.unwrap(),
         remote_feature_value,
     );
-    assert!(provider.get_code_at(alloc.markers[2].0).await.unwrap().is_empty());
+    assert!(provider.get_code_at(B20_POLICY_REGISTRY).await.unwrap().is_empty());
 
     api.anvil_reset(Some(Forking::default())).await.unwrap();
 
-    assert_eq!(provider.get_code_at(alloc.markers[0].0).await.unwrap(), remote_code);
+    assert_eq!(provider.get_code_at(B20_FACTORY).await.unwrap(), remote_code);
     assert_eq!(
-        provider.get_storage_at(alloc.feature_seeds[2].0, alloc.feature_seeds[2].1).await.unwrap(),
+        provider.get_storage_at(B20_ACTIVATION_REGISTRY, B20_FEATURE_SLOTS[2]).await.unwrap(),
         remote_feature_value,
     );
 }
@@ -280,7 +290,7 @@ async fn hashkey_cli_prints_profile_aware_b20_traces() {
     }
     assert!(ready, "anvil --network hashkey should start serving RPC");
 
-    let factory = hashkey_alloc().markers[0].0;
+    let factory = B20_FACTORY;
     let tx = TransactionRequest::default()
         .to(factory)
         .with_input(IB20Factory::isB20Call { token: Address::repeat_byte(0x11) }.abi_encode());

@@ -30,6 +30,9 @@ const CALLER: Address = address!("1111111111111111111111111111111111111111");
 const B20_FACTORY: Address = address!("B20F000000000000000000000000000000000000");
 const B20_ACTIVATION_REGISTRY: Address = address!("8453000000000000000000000000000000000001");
 const B20_POLICY_REGISTRY: Address = address!("8453000000000000000000000000000000000002");
+const POLICY_FEATURE_SLOT: U256 = alloy_primitives::uint!(
+    0x8c5327ddcca092db72284503162323c6e8d392394b1d5c71991227bbc26f7c07_U256
+);
 const ASSET: Address = address!("b20000000000000000000066c4330a000f141455");
 const STABLECOIN: Address = address!("b20000000000000000000166ab25bbf43b4010ce");
 const MARKER_CODE_HASH: B256 =
@@ -445,8 +448,8 @@ fn activation_snapshot_survives_warp_and_refreshes_on_later_evm_creation() {
         hsk_b20_config::B20Config::new(Some(100), Some(Address::repeat_byte(0x11))).unwrap();
     let profile = NetworkConfigs::with_hashkey().resolve().with_b20_config_for_test(config);
     let mut backend = backend(profile);
-    let (activation_registry, feature_slot, _) =
-        profile.b20_genesis_alloc().unwrap().feature_seeds[0];
+    let activation_registry = B20_ACTIVATION_REGISTRY;
+    let feature_slot = POLICY_FEATURE_SLOT;
     backend.insert_account_storage(activation_registry, feature_slot, U256::ZERO).unwrap();
 
     let mut created_at_99 = OpEvmFactory::default().create_foundry_evm_with_inspector(
