@@ -15,6 +15,7 @@ use crate::{
             fork::ClientFork,
             genesis::GenesisConfig,
             mem::{
+                in_memory_db::MemDb,
                 state::{storage_root, trie_accounts},
                 storage::MinedTransactionReceipt,
             },
@@ -2287,8 +2288,8 @@ impl<N: Network> Backend<N> {
         );
         self.states.write().clear();
 
-        // Clear the database
-        self.db.write().await.clear();
+        // Replace any forked database so the standalone state has no remote fallback.
+        *self.db.write().await = Box::new(MemDb::default());
 
         // Reset time manager
         self.time.reset(genesis_timestamp);

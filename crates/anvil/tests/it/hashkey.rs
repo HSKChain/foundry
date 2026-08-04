@@ -13,7 +13,7 @@ use std::{
 use crate::utils::http_provider;
 use alloy_eips::eip7910::EthConfig;
 use alloy_network::{AnyNetwork, TransactionBuilder};
-use alloy_primitives::{Address, Bytes, U256};
+use alloy_primitives::{Address, Bytes, U256, address};
 use alloy_provider::Provider;
 use alloy_rpc_types::{TransactionRequest, anvil::Forking};
 #[cfg(feature = "cli")]
@@ -98,6 +98,63 @@ async fn hashkey_standalone_reset_and_inventory() {
         .unwrap();
     api.anvil_reset(None).await.unwrap();
 
+    assert_hashkey_baseline(&provider).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hashkey_fork_to_standalone_discards_remote_backing() {
+    let (source_api, source_handle) = spawn(NodeConfig::test()).await;
+    let remote_account = address!("4200000000000000000000000000000000000042");
+    let unseen_remote_account = address!("4300000000000000000000000000000000000043");
+    let dynamic_b20_token = address!("B200000000000000000000000000000000000000");
+    let slot = U256::from(7);
+    let unseen_slot = U256::from(8);
+    let remote_code = Bytes::from_static(&[0xde, 0xad, 0xbe, 0xef]);
+    let remote_value = U256::from(7);
+    let unseen_remote_value = U256::from(11);
+
+    source_api.anvil_set_balance(remote_account, remote_value).await.unwrap();
+    source_api.anvil_set_code(remote_account, remote_code.clone()).await.unwrap();
+    source_api.anvil_set_storage_at(remote_account, slot, remote_value.into()).await.unwrap();
+    source_api.anvil_set_balance(unseen_remote_account, unseen_remote_value).await.unwrap();
+    source_api.anvil_set_code(unseen_remote_account, remote_code.clone()).await.unwrap();
+    source_api
+        .anvil_set_storage_at(unseen_remote_account, unseen_slot, unseen_remote_value.into())
+        .await
+        .unwrap();
+    source_api.anvil_set_code(dynamic_b20_token, Bytes::from_static(&[0xef])).await.unwrap();
+    source_api.anvil_set_storage_at(dynamic_b20_token, slot, remote_value.into()).await.unwrap();
+
+    let (api, handle) = spawn(
+        NodeConfig::test()
+            .with_networks(NetworkConfigs::with_hashkey())
+            .with_eth_rpc_url(Some(source_handle.http_endpoint())),
+    )
+    .await;
+    let provider = handle.http_provider();
+    let genesis_account = api.accounts().unwrap()[0];
+    let genesis_balance = provider.get_balance(genesis_account).await.unwrap();
+
+    assert_eq!(provider.get_balance(remote_account).await.unwrap(), remote_value);
+    assert_eq!(provider.get_code_at(remote_account).await.unwrap(), remote_code);
+    assert_eq!(provider.get_storage_at(remote_account, slot).await.unwrap(), remote_value);
+    assert_eq!(provider.get_code_at(dynamic_b20_token).await.unwrap(), Bytes::from_static(&[0xef]));
+    assert_eq!(provider.get_storage_at(dynamic_b20_token, slot).await.unwrap(), remote_value);
+
+    api.anvil_reset(None).await.unwrap();
+
+    assert_eq!(provider.get_balance(remote_account).await.unwrap(), U256::ZERO);
+    assert!(provider.get_code_at(remote_account).await.unwrap().is_empty());
+    assert_eq!(provider.get_storage_at(remote_account, slot).await.unwrap(), U256::ZERO);
+    assert_eq!(provider.get_balance(unseen_remote_account).await.unwrap(), U256::ZERO);
+    assert!(provider.get_code_at(unseen_remote_account).await.unwrap().is_empty());
+    assert_eq!(
+        provider.get_storage_at(unseen_remote_account, unseen_slot).await.unwrap(),
+        U256::ZERO
+    );
+    assert!(provider.get_code_at(dynamic_b20_token).await.unwrap().is_empty());
+    assert_eq!(provider.get_storage_at(dynamic_b20_token, slot).await.unwrap(), U256::ZERO);
+    assert_eq!(provider.get_balance(genesis_account).await.unwrap(), genesis_balance);
     assert_hashkey_baseline(&provider).await;
 }
 
