@@ -2131,9 +2131,11 @@ impl<N: Network> Backend<N> {
         // Apply the genesis.json alloc before profile-owned fields, preserving precedence.
         self.genesis.apply_genesis_json_alloc(self.db.write().await)?;
 
-        let mut db = self.db.write().await;
-        let mut state = AnvilLocalGenesisState(&mut **db);
-        self.network_profile.apply_profile_genesis(target, &mut state)?;
+        {
+            let mut db = self.db.write().await;
+            let mut state = AnvilLocalGenesisState(&mut **db);
+            self.network_profile.apply_profile_genesis(target, &mut state)?;
+        }
 
         // Initialize Tempo precompiles and fee tokens when in Tempo mode (not in fork mode).
         // In fork mode, precompiles are inherited from the forked origin.
