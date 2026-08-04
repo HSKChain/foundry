@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -194,6 +195,67 @@ tempo-revm = {{ path = "../tempo-spike/crates/revm" }}
 
         self.assertEqual(gate.validate_release_identity(root), [])
         self.assertEqual(gate.validate_release_files(root), [])
+
+    def test_workspace_test_environment_owns_required_stack_policy(self):
+        environment = gate.workspace_test_environment()
+
+        self.assertEqual(
+            environment.get("RUST_MIN_STACK"),
+            gate.TEST_RUST_MIN_STACK,
+            "workspace runtime test commands must set RUST_MIN_STACK",
+        )
+
+    def test_cast_opts_parse_tests_require_module_owned_stack_policy(self):
+        # Focused regression for the Cast `opts::tests::parse_*` stack overflows:
+        # without the module-owned RUST_MIN_STACK the debug test harness thread
+        # overflows in deep clap parsing; with it the tests pass. Runs against a
+        # prebuilt cast test binary and skips when the workspace is not built.
+        candidates = [
+            path
+            for path in sorted(
+                (Path(__file__).parents[3] / "target/debug/deps").glob("cast-*")
+            )
+            if path.is_file() and os.access(path, os.X_OK)
+        ]
+        if not candidates:
+            self.skipTest("cast test binary not built; run the workspace build first")
+
+        base_env = dict(os.environ)
+        base_env.pop("RUST_MIN_STACK", None)
+        overflows = []
+        for binary in candidates:
+            without = subprocess.run(
+                [binary, "opts::tests::parse_call_data", "--exact"],
+                env=base_env,
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+            if without.returncode < 0:
+                # Killed by a signal: the debug test thread aborts on stack
+                # overflow. Plain usage errors (exit 2) are CLI binaries, not
+                # test binaries, and must not be treated as overflows.
+                overflows.append((binary, without))
+        self.assertTrue(
+            overflows,
+            "no cast test binary overflowed without RUST_MIN_STACK; "
+            "the stack policy is no longer required",
+        )
+
+        for binary, _ in overflows:
+            with_env = subprocess.run(
+                [binary, "opts::tests::parse_call_data", "--exact"],
+                env=gate.workspace_test_environment(),
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+            self.assertEqual(
+                with_env.returncode,
+                0,
+                f"{binary.name} parse_call_data failed with module-owned "
+                f"RUST_MIN_STACK: {with_env.stderr}",
+            )
 
     def test_cli_writes_release_metadata_without_running_cargo_metadata(self):
         root = SCRIPT.parents[2]

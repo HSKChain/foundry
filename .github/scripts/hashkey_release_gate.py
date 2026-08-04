@@ -5,12 +5,32 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
 import tomllib
 from pathlib import Path
 from typing import Any
+
+
+# Workspace runtime test commands execute in debug test harness threads whose
+# default 2 MiB stack overflows in deep clap argument-parsing recursion (Cast
+# `opts::tests::parse_*`). The evidence plan owns this policy: it is applied to
+# every workspace test command the module spawns and must not depend on ambient
+# shell configuration.
+TEST_RUST_MIN_STACK = "4194304"
+
+
+def workspace_test_environment() -> dict[str, str]:
+    """Returns the environment for workspace runtime test commands.
+
+    Merges the current process environment with the module-owned test stack
+    policy.
+    """
+    env = dict(os.environ)
+    env["RUST_MIN_STACK"] = TEST_RUST_MIN_STACK
+    return env
 
 
 APPROVED_REPOSITORY = "https://github.com/HSKChain/optimism"

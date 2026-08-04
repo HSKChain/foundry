@@ -2775,67 +2775,238 @@ casttest!(block_number_hash, |_prj, cmd| {
 
 // Tests that `cast --disable-block-gas-limit` commands are working correctly for BSC
 // <https://github.com/foundry-rs/foundry/pull/9996>
-// Equivalent transaction on Binance Smart Chain Testnet:
-// <https://testnet.bscscan.com/tx/0x0db4f279fc4d47dca1e6ace180f45f50c5bf12e2b968f210c217f57031e02744>
-casttest!(run_disable_block_gas_limit_check, |_prj, cmd| {
-    let bsc_testnet_rpc_url = next_rpc_endpoint(NamedChain::BinanceSmartChainTestnet);
+// The original test depended on a public BSC testnet RPC to find a transaction whose
+// gas limit exceeds the block gas limit. It now uses a deterministic local fixture:
+// a transaction is mined on a local anvil node and replayed through a tiny JSON-RPC
+// proxy that reports a lower block gas limit than the transaction's own gas limit,
+// so the local `cast run` validation observes the same mismatch without any network.
+casttest!(run_disable_block_gas_limit_check, async |_prj, cmd| {
+    let (_api, handle) = anvil::spawn(NodeConfig::test()).await;
+    let endpoint = handle.http_endpoint();
+    let proxy = spawn_block_gas_limit_proxy(&endpoint, 100_000);
 
-    let latest_block_json: serde_json::Value = serde_json::from_str(
-        &cmd.args(["block", "--rpc-url", bsc_testnet_rpc_url.as_str(), "--json"])
-            .assert_success()
-            .get_output()
-            .stdout_lossy(),
-    )
-    .expect("Failed to parse latest block");
+    let send_output = cmd
+        .cast_fuse()
+        .args([
+            "send",
+            "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
+            "--value",
+            "1",
+            "--gas-limit",
+            "500000",
+            "--private-key",
+            "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
+            "--rpc-url",
+            &endpoint,
+            "--json",
+        ])
+        .assert_success()
+        .get_output()
+        .stdout_lossy();
+    let send_json: serde_json::Value =
+        serde_json::from_str(&send_output).expect("Failed to parse cast send output");
+    let tx_hash =
+        send_json["transactionHash"].as_str().expect("Transaction missing hash").to_string();
 
-    let latest_excessive_gas_limit_tx =
-        latest_block_json["transactions"].as_array().and_then(|txs| {
-            txs.iter()
-                .find(|tx| tx.get("gas").and_then(|gas| gas.as_str()) == Some("0x7fffffffffffffff"))
-        });
+    // If --disable-block-gas-limit is not provided, the transaction should fail as the gas
+    // limit exceeds the block gas limit reported by the proxy.
+    cmd.cast_fuse()
+        .args(["run", "-v", &tx_hash, "--quick", "--rpc-url", &proxy])
+        .assert_failure()
+        .stderr_eq(str![[r#"
+Error: EVM error
 
-    match latest_excessive_gas_limit_tx {
-        Some(tx) => {
-            let tx_hash =
-                tx.get("hash").and_then(|h| h.as_str()).expect("Transaction missing hash");
-
-            // If --disable-block-gas-limit is not provided, the transaction should fail as the gas
-            // limit exceeds the block gas limit.
-            cmd.cast_fuse()
-                .args(["run", "-v", tx_hash, "--quick", "--rpc-url", bsc_testnet_rpc_url.as_str()])
-                .assert_failure()
-                .stderr_eq(str![[r#"
-Error: EVM error; transaction validation error: caller gas limit exceeds the block gas limit
+Context:
+- transaction validation error: caller gas limit exceeds the block gas limit
 
 "#]]);
 
-            // If --disable-block-gas-limit is provided, the transaction should succeed
-            // despite the gas limit exceeding the block gas limit.
-            cmd.cast_fuse()
-                .args([
-                    "run",
-                    "-v",
-                    tx_hash,
-                    "--quick",
-                    "--rpc-url",
-                    bsc_testnet_rpc_url.as_str(),
-                    "--disable-block-gas-limit",
-                ])
-                .assert_success()
-                .stdout_eq(str![[r#"
+    // If --disable-block-gas-limit is provided, the transaction should succeed
+    // despite the gas limit exceeding the block gas limit.
+    cmd.cast_fuse()
+        .args([
+            "run",
+            "-v",
+            &tx_hash,
+            "--quick",
+            "--rpc-url",
+            &proxy,
+            "--disable-block-gas-limit",
+        ])
+        .assert_success()
+        .stdout_eq(str![[r#"
 ...
 Transaction successfully executed.
 [GAS]
 
 "#]]);
+});
+
+/// Spawns a minimal JSON-RPC proxy in front of `upstream` that rewrites
+/// `eth_getBlockByNumber` responses so the reported block gas limit is
+/// `block_gas_limit`. Returns the proxy base URL.
+fn spawn_block_gas_limit_proxy(upstream: &str, block_gas_limit: u64) -> String {
+    use std::io::{BufReader, Write};
+    use std::net::{TcpListener, TcpStream};
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("failed to bind proxy");
+    let proxy_url = format!("http://{}", listener.local_addr().expect("proxy address"));
+    let upstream = upstream.strip_prefix("http://").unwrap_or(upstream).to_string();
+    let gas_limit_hex = format!("{:#x}", block_gas_limit);
+
+    std::thread::spawn(move || {
+        for conn in listener.incoming() {
+            let Ok(conn) = conn else { continue };
+            let upstream = upstream.clone();
+            let gas_limit_hex = gas_limit_hex.clone();
+            std::thread::spawn(move || {
+                let mut conn = conn;
+                let mut reader = BufReader::new(conn.try_clone().expect("clone connection"));
+                while let Some(request) = read_http_request(&mut reader) {
+                    let rewrite_block_gas_limit =
+                        request_body_has_method(&request, "eth_getBlockByNumber");
+                    // Ask the upstream to close after the response so the read below
+                    // terminates without half-closing the connection (anvil ignores
+                    // requests whose write side was shut down).
+                    let request = rewrite_connection_close(&request);
+
+                    let mut upstream_stream =
+                        TcpStream::connect(&upstream).expect("connect to upstream");
+                    upstream_stream.write_all(&request).expect("forward request");
+                    let mut upstream_reader = BufReader::new(upstream_stream);
+                    let response =
+                        read_http_request(&mut upstream_reader).expect("read upstream response");
+
+                    let response = if rewrite_block_gas_limit {
+                        rewrite_json_gas_limit(&response, &gas_limit_hex)
+                    } else {
+                        response
+                    };
+                    conn.write_all(&response).expect("write response");
+                    conn.flush().expect("flush response");
+                }
+            });
         }
-        None => {
-            eprintln!(
-                "Skipping test: No transaction with gas = 0x7fffffffffffffff found in the latest block."
-            );
+    });
+
+    proxy_url
+}
+
+/// Reads a single HTTP request (headers plus Content-Length body) from `reader`.
+fn read_http_request(reader: &mut impl std::io::BufRead) -> Option<Vec<u8>> {
+    let mut head = Vec::new();
+    let mut buf = [0u8; 4096];
+    let header_end = loop {
+        let n = reader.read(&mut buf).ok()?;
+        if n == 0 {
+            return if head.is_empty() { None } else { Some(head) };
+        }
+        head.extend_from_slice(&buf[..n]);
+        if let Some(pos) = head.windows(4).position(|window| window == b"\r\n\r\n") {
+            break pos + 4;
+        }
+        if head.len() > 1 << 20 {
+            return None;
+        }
+    };
+    let headers = String::from_utf8_lossy(&head[..header_end]);
+    let content_length = headers
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.trim()
+                .eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse::<usize>().ok())?
+        })
+        .unwrap_or(0);
+    while head.len() < header_end + content_length {
+        let n = reader.read(&mut buf).ok()?;
+        if n == 0 {
+            return Some(head);
+        }
+        head.extend_from_slice(&buf[..n]);
+    }
+    Some(head)
+}
+
+/// Returns whether the JSON-RPC request body uses `method`.
+fn request_body_has_method(request: &[u8], method: &str) -> bool {
+    let Some(header_end) = request.windows(4).position(|window| window == b"\r\n\r\n") else {
+        return false;
+    };
+    serde_json::from_slice::<serde_json::Value>(&request[header_end + 4..])
+        .ok()
+        .and_then(|value| value.get("method").and_then(|method_value| method_value.as_str()).map(str::to_owned))
+        .is_some_and(|actual| actual == method)
+}
+
+/// Rewrites the HTTP `Connection` header of a request to `close`.
+fn rewrite_connection_close(request: &[u8]) -> Vec<u8> {
+    let Some(header_end) = request.windows(4).position(|window| window == b"\r\n\r\n") else {
+        return request.to_vec();
+    };
+    let header_text = String::from_utf8_lossy(&request[..header_end]);
+    let mut new_header = String::new();
+    for line in header_text.lines() {
+        if line.trim_end_matches('\r').is_empty() {
+            continue;
+        }
+        let name = line.split_once(':').map(|(name, _)| name).unwrap_or(line);
+        if name.trim().eq_ignore_ascii_case("connection") {
+            new_header.push_str("Connection: close\r\n");
+        } else {
+            new_header.push_str(line);
+            new_header.push_str("\r\n");
         }
     }
-});
+    let mut rewritten = Vec::with_capacity(new_header.len() + request.len() - header_end);
+    rewritten.extend_from_slice(new_header.as_bytes());
+    rewritten.extend_from_slice(b"\r\n");
+    rewritten.extend_from_slice(&request[header_end + 4..]);
+    rewritten
+}
+
+/// Rewrites the `gasLimit` field of a JSON-RPC response, updating Content-Length.
+fn rewrite_json_gas_limit(response: &[u8], gas_limit_hex: &str) -> Vec<u8> {
+    let Some(header_end) = response.windows(4).position(|window| window == b"\r\n\r\n") else {
+        return response.to_vec();
+    };
+    let header = &response[..header_end];
+    let body = &response[header_end + 4..];
+    let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(body) else {
+        return response.to_vec();
+    };
+    if let Some(result) = value.get_mut("result") {
+        if let Some(gas_limit) = result.get_mut("gasLimit") {
+            *gas_limit = serde_json::Value::String(gas_limit_hex.to_string());
+        }
+    }
+    let new_body = serde_json::to_vec(&value).expect("serialize rewritten response");
+
+    let header_text = String::from_utf8_lossy(header);
+    let mut new_header = String::new();
+    for line in header_text.lines() {
+        if line.trim_end_matches('\r').is_empty() {
+            continue;
+        }
+        let name = line.split_once(':').map(|(name, _)| name).unwrap_or(line);
+        if name.trim().eq_ignore_ascii_case("content-length") {
+            new_header.push_str(&format!("Content-Length: {}\r\n", new_body.len()));
+        } else if name.trim().eq_ignore_ascii_case("transfer-encoding") {
+            // Responses are rewritten to a fixed body, so no chunked encoding.
+        } else {
+            new_header.push_str(line);
+            new_header.push_str("\r\n");
+        }
+    }
+    new_header.push_str("Connection: close\r\n");
+
+    let mut rewritten = Vec::with_capacity(new_header.len() + new_body.len());
+    rewritten.extend_from_slice(new_header.as_bytes());
+    rewritten.extend_from_slice(b"\r\n");
+    rewritten.extend_from_slice(&new_body);
+    rewritten
+}
 
 casttest!(send_eip7702, async |_prj, cmd| {
     let (_api, handle) =
