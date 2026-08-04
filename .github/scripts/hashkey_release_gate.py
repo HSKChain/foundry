@@ -75,22 +75,30 @@ ALLOY_CORE_PACKAGES = (
 )
 SINGLETON_PACKAGES = (*ALLOY_CORE_PACKAGES, "alloy-evm", "revm")
 
-SOURCE_EVIDENCE_IDS = (
-    "gate-contract",
-    "locked-dependency-graph",
-    "documentation-contract",
-    "standard-builds",
-    "no-default-build",
-    "static",
+BUILD_EVIDENCE_IDS = ("standard-builds.workspace", "standard-builds.cli")
+STATIC_EVIDENCE_IDS = ("static.fmt", "static.clippy-evm", "static.clippy-networks", "static.clippy-chisel")
+GOLDEN_EVIDENCE_IDS = (
     "golden.asset",
     "golden.stablecoin",
     "golden.factory",
     "golden.policy",
+)
+FOCUSED_EVIDENCE_IDS = (
     "foundry-conformance",
     "cli.forge",
     "cli.anvil",
     "cli.cast",
     "cli.chisel",
+)
+SOURCE_EVIDENCE_IDS = (
+    "gate-contract",
+    "locked-dependency-graph",
+    "documentation-contract",
+    *BUILD_EVIDENCE_IDS,
+    "no-default-build",
+    *STATIC_EVIDENCE_IDS,
+    *GOLDEN_EVIDENCE_IDS,
+    *FOCUSED_EVIDENCE_IDS,
     "non-hashkey-regression",
     "full-workspace",
 )
@@ -299,6 +307,8 @@ def validate_release_files(root: Path) -> list[str]:
         "finalize-release:",
         "hashkey-release-metadata.json",
         "--validate-release-metadata",
+        ".github/scripts/hashkey-release-gate.sh metadata",
+        "--output hashkey-release-metadata.json",
     ):
         if required not in release_workflow:
             errors.append(f"release workflow must include {required}")
@@ -326,8 +336,32 @@ def validate_release_files(root: Path) -> list[str]:
     workflow_targets = set(re.findall(r"target:\s*([^\s]+)", release_workflow))
     if workflow_targets != expected_targets:
         errors.append("release workflow target matrix must equal the closed artifact target map")
-    if "target: aarch64-unknown-linux-musl\n            svm_target_platform" in release_workflow and "runner: depot-ubuntu-22.04-arm-16" not in release_workflow:
-        errors.append("aarch64-unknown-linux-musl must run on an ARM64 Linux runner")
+    expected_runners = {
+        "x86_64-unknown-linux-gnu": "depot-ubuntu-22.04-16",
+        "x86_64-unknown-linux-musl": "depot-ubuntu-22.04-16",
+        "aarch64-unknown-linux-gnu": "depot-ubuntu-22.04-arm-16",
+        "aarch64-unknown-linux-musl": "depot-ubuntu-22.04-arm-16",
+        "x86_64-apple-darwin": "macos-14-large",
+        "aarch64-apple-darwin": "macos-14",
+        "x86_64-pc-windows-msvc": "depot-windows-latest-16",
+    }
+    for target, runner in expected_runners.items():
+        if re.search(
+            rf"- runner:\s*{re.escape(runner)}\s*\n\s+target:\s*{re.escape(target)}\b",
+            release_workflow,
+        ) is None:
+            errors.append(f"release workflow must pair {target} with native runner {runner}")
+    step_order = (
+        "Archive binaries",
+        "Validate final release archive",
+        "Generate archive checksum",
+        "Generate SBOM (SPDX)",
+        "Sign archive with cosign (keyless)",
+        "Upload complete release asset bundle",
+    )
+    step_positions = [release_workflow.find(f"- name: {name}") for name in step_order]
+    if any(position < 0 for position in step_positions) or step_positions != sorted(step_positions):
+        errors.append("release workflow must order archive, artifact, checksum, SBOM, sign, and upload steps")
     if "Verify native target host" not in release_workflow:
         errors.append("release workflow must prove native target host architecture")
 
@@ -681,17 +715,31 @@ def run_source_gate(input: SourceGateInput) -> GateOutcome:
             [validate_dependency_files, validate_release_identity, validate_release_files],
         )
     )
-    results.append(
-        _source_result(
-            "standard-builds",
-            executor,
-            root,
+    for evidence_id, command in (
+        (
+            "standard-builds.workspace",
+            ["cargo", "build", "--workspace", "--locked"],
+        ),
+        (
+            "standard-builds.cli",
             [
-                ["cargo", "build", "--workspace", "--locked"],
-                ["cargo", "build", "--locked", "-p", "forge@1.7.1", "-p", "cast@1.7.1", "-p", "anvil@1.7.1", "-p", "chisel@1.7.1", "--features", "hashkey"],
+                "cargo",
+                "build",
+                "--locked",
+                "-p",
+                "forge@1.7.1",
+                "-p",
+                "cast@1.7.1",
+                "-p",
+                "anvil@1.7.1",
+                "-p",
+                "chisel@1.7.1",
+                "--features",
+                "hashkey",
             ],
-        )
-    )
+        ),
+    ):
+        results.append(_source_result(evidence_id, executor, root, [command]))
     results.append(
         _source_result(
             "no-default-build",
@@ -700,19 +748,54 @@ def run_source_gate(input: SourceGateInput) -> GateOutcome:
             [["cargo", "build", "--workspace", "--no-default-features", "--locked"]],
         )
     )
-    results.append(
-        _source_result(
-            "static",
-            executor,
-            root,
+    for evidence_id, command in (
+        (
+            "static.fmt",
+            ["cargo", "+nightly", "fmt", "--all", "--", "--check"],
+        ),
+        (
+            "static.clippy-evm",
             [
-                ["cargo", "+nightly", "fmt", "--all", "--", "--check"],
-                ["cargo", "+nightly", "clippy", "-p", "foundry-evm-core@1.7.1", "--all-targets", "--features", "hashkey", "--locked"],
-                ["cargo", "+nightly", "clippy", "-p", "foundry-evm-networks@1.7.1", "--all-targets", "--all-features", "--locked"],
-                ["cargo", "+nightly", "clippy", "-p", "chisel@1.7.1", "--all-targets", "--features", "hashkey", "--locked"],
+                "cargo",
+                "+nightly",
+                "clippy",
+                "-p",
+                "foundry-evm-core@1.7.1",
+                "--all-targets",
+                "--features",
+                "hashkey",
+                "--locked",
             ],
-        )
-    )
+        ),
+        (
+            "static.clippy-networks",
+            [
+                "cargo",
+                "+nightly",
+                "clippy",
+                "-p",
+                "foundry-evm-networks@1.7.1",
+                "--all-targets",
+                "--all-features",
+                "--locked",
+            ],
+        ),
+        (
+            "static.clippy-chisel",
+            [
+                "cargo",
+                "+nightly",
+                "clippy",
+                "-p",
+                "chisel@1.7.1",
+                "--all-targets",
+                "--features",
+                "hashkey",
+                "--locked",
+            ],
+        ),
+    ):
+        results.append(_source_result(evidence_id, executor, root, [command]))
 
     try:
         with _upstream_checkout(root, input.upstream_checkout) as (upstream, target_dir):
@@ -720,7 +803,7 @@ def run_source_gate(input: SourceGateInput) -> GateOutcome:
             if target_dir is not None:
                 golden_env["CARGO_TARGET_DIR"] = str(target_dir / "target")
             for evidence_id, suite in zip(
-                SOURCE_EVIDENCE_IDS[6:10],
+                GOLDEN_EVIDENCE_IDS,
                 (
                     "b20_asset_v1_golden",
                     "b20_stablecoin_v1_golden",
@@ -738,7 +821,7 @@ def run_source_gate(input: SourceGateInput) -> GateOutcome:
                     )
                 )
     except RuntimeError as error:
-        for evidence_id in SOURCE_EVIDENCE_IDS[6:10]:
+        for evidence_id in GOLDEN_EVIDENCE_IDS:
             results.append(EvidenceResult(evidence_id, "blocked", str(error)))
 
     focused = {
@@ -748,7 +831,7 @@ def run_source_gate(input: SourceGateInput) -> GateOutcome:
         "cli.cast": [["cargo", "test", "--locked", "-p", "cast@1.7.1", "--test", "cli", "--features", "hashkey", "hashkey::hashkey_b20_anvil_cast_workflow", "--", "--exact"]],
         "cli.chisel": [["cargo", "test", "--locked", "-p", "chisel@1.7.1", "--test", "it", "--features", "hashkey", "repl::hashkey_b20_stateful_session", "--", "--exact"]],
     }
-    for evidence_id in SOURCE_EVIDENCE_IDS[10:15]:
+    for evidence_id in FOCUSED_EVIDENCE_IDS:
         results.append(_source_result(evidence_id, executor, root, focused[evidence_id]))
 
     results.append(
@@ -1034,6 +1117,24 @@ def _checkout_head() -> str:
         raise ArtifactEvidenceError(f"cannot resolve release checkout HEAD: {error}") from error
 
 
+def _validate_release_tag_head(tag: str, head: str) -> None:
+    release_class, _, nightly_sha = _release_identity_projection(tag)
+    if nightly_sha is not None:
+        if nightly_sha != head:
+            raise ArtifactEvidenceError("nightly release tag does not match checkout HEAD")
+        return
+    try:
+        tagged_head = subprocess.check_output(
+            ["git", "rev-parse", f"refs/tags/{tag}^{{commit}}"], text=True
+        ).strip()
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise ArtifactEvidenceError(f"cannot resolve stable release tag {tag}: {error}") from error
+    if tagged_head != head:
+        raise ArtifactEvidenceError(
+            f"{release_class} release tag {tag} does not point to checkout HEAD"
+        )
+
+
 def _run_binary(binary: Path, argument: str) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(
@@ -1063,9 +1164,8 @@ def _probe_artifact_surfaces(
 
 
 def _validate_binary_identities(identities: list[BinaryIdentity], tag: str, head: str) -> str:
-    release_class, expected_version, nightly_sha = _release_identity_projection(tag)
-    if nightly_sha is not None and nightly_sha != head:
-        raise ArtifactEvidenceError("nightly release tag does not match checkout HEAD")
+    release_class, expected_version, _ = _release_identity_projection(tag)
+    _validate_release_tag_head(tag, head)
     for identity in identities:
         if identity.version != expected_version:
             raise ArtifactEvidenceError(
@@ -1165,7 +1265,7 @@ def main() -> int:
     parser.add_argument("--archive", type=Path)
     parser.add_argument("--target")
     parser.add_argument("--release-tag")
-    parser.add_argument("--write-release-metadata", type=Path)
+    parser.add_argument("--output", type=Path)
     parser.add_argument("--validate-release-metadata", type=Path)
     parser.add_argument("--tag")
     parser.add_argument("--commit")
@@ -1218,9 +1318,11 @@ def main() -> int:
     errors.extend(validate_release_identity(root))
     errors.extend(validate_release_files(root))
 
-    if args.write_release_metadata:
+    if args.output:
+        if args.operation != "metadata":
+            parser.error("--output is only valid for the metadata operation")
         if not args.tag or not args.commit:
-            parser.error("--write-release-metadata requires --tag and --commit")
+            parser.error("metadata --output requires --tag and --commit")
         try:
             metadata = build_release_metadata(args.tag, args.commit)
         except ValueError as error:
@@ -1229,7 +1331,7 @@ def main() -> int:
             for error in errors:
                 print(f"error: {error}", file=sys.stderr)
             return 1
-        args.write_release_metadata.write_text(
+        args.output.write_text(
             json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
         return 0

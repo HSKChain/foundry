@@ -110,7 +110,7 @@ jobs:
         run: |
           set -euo pipefail
           ./.github/scripts/hashkey-release-gate.sh metadata \
-            --write-release-metadata hashkey-release-metadata.json \
+            --output hashkey-release-metadata.json \
             --tag "${{ steps.release_info.outputs.tag_name }}" \
             --commit "$GITHUB_SHA"
 
@@ -182,7 +182,7 @@ jobs:
             svm_target_platform: macosx-amd64
             platform: darwin
             arch: amd64
-          - runner: macos-latest-large
+          - runner: macos-14
             target: aarch64-apple-darwin
             svm_target_platform: macosx-aarch64
             platform: darwin

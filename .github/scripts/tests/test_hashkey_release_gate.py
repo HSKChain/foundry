@@ -62,9 +62,13 @@ class HashKeyReleaseGateTests(unittest.TestCase):
                 "gate-contract",
                 "locked-dependency-graph",
                 "documentation-contract",
-                "standard-builds",
+                "standard-builds.workspace",
+                "standard-builds.cli",
                 "no-default-build",
-                "static",
+                "static.fmt",
+                "static.clippy-evm",
+                "static.clippy-networks",
+                "static.clippy-chisel",
                 "golden.asset",
                 "golden.stablecoin",
                 "golden.factory",
@@ -274,6 +278,17 @@ class HashKeyReleaseGateTests(unittest.TestCase):
         with self.assertRaises(gate.ArtifactUsageError):
             gate._target_policy("x86_64-unknown-linux-gnuu")
 
+    def test_stable_release_tag_must_resolve_to_checkout_head(self):
+        head = "a" * 40
+        with mock.patch.object(gate.subprocess, "check_output", return_value=f"{head}\n") as check:
+            gate._validate_release_tag_head("v1.7.1-hsk-b20", head)
+        check.assert_called_once_with(
+            ["git", "rev-parse", "refs/tags/v1.7.1-hsk-b20^{commit}"], text=True
+        )
+        with mock.patch.object(gate.subprocess, "check_output", return_value=f"{'b' * 40}\n"):
+            with self.assertRaises(gate.ArtifactEvidenceError):
+                gate._validate_release_tag_head("v1.7.1-hsk-b20", head)
+
     def test_release_identity_projections_cover_hsk_stable_ordinary_and_nightly(self):
         self.assertEqual(
             gate._release_identity_projection("v1.7.1-hsk-b20"),
@@ -299,6 +314,7 @@ class HashKeyReleaseGateTests(unittest.TestCase):
             mock.patch.object(gate, "_host_matches_target", return_value=True),
             mock.patch.object(gate, "_probe_artifact_surfaces", return_value=(identities, "probed")),
             mock.patch.object(gate, "_checkout_head", return_value=head),
+            mock.patch.object(gate, "_validate_release_tag_head"),
             mock.patch.object(gate, "_run_standalone_execution", return_value="execution"),
         ]
         with contextlib.ExitStack() as stack:
@@ -328,6 +344,7 @@ class HashKeyReleaseGateTests(unittest.TestCase):
             stack.enter_context(mock.patch.object(gate, "_host_matches_target", return_value=True))
             stack.enter_context(mock.patch.object(gate, "_probe_artifact_surfaces", return_value=(identities, "probed")))
             stack.enter_context(mock.patch.object(gate, "_checkout_head", return_value=head))
+            stack.enter_context(mock.patch.object(gate, "_validate_release_tag_head"))
             outcome = gate.run_artifact_gate(
                 gate.ArtifactGateInput(archive, "x86_64-unknown-linux-gnu", "v1.7.1-hsk-b20")
             )
@@ -595,7 +612,7 @@ tempo-revm = {{ path = "../tempo-spike/crates/revm" }}
                     "metadata",
                     "--root",
                     root,
-                    "--write-release-metadata",
+                    "--output",
                     output,
                     "--tag",
                     "v1.7.1-hsk-b20",
