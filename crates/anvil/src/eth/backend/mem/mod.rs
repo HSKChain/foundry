@@ -108,7 +108,10 @@ use foundry_evm::{
         get_blob_base_fee_update_fraction_by_spec_id,
     },
 };
-use foundry_evm_networks::{NetworkExecutionContext, NetworkStatePlan, ResolvedNetworkProfile};
+use foundry_evm_networks::{
+    LocalGenesisState, NetworkExecutionContext, NetworkStatePlan, ProfileGenesisTarget,
+    ResolvedNetworkProfile,
+};
 use foundry_primitives::{
     FoundryNetwork, FoundryReceiptEnvelope, FoundryTransactionRequest, FoundryTxEnvelope,
     FoundryTxReceipt, get_deposit_tx_parts,
@@ -200,6 +203,35 @@ impl<T> BlockRequest<T> {
 }
 
 /// Gives access to the [revm::Database]
+struct AnvilLocalGenesisState<'a>(&'a mut dyn Db);
+
+impl LocalGenesisState for AnvilLocalGenesisState<'_> {
+    type Error = DatabaseError;
+
+    fn patch_account(
+        &mut self,
+        address: Address,
+        code: Bytes,
+        nonce: u64,
+    ) -> Result<(), Self::Error> {
+        let mut account = self.0.basic(address)?.unwrap_or_default();
+        account.code_hash = keccak256(code.as_ref());
+        account.code = Some(revm::bytecode::Bytecode::new_raw(code));
+        account.nonce = nonce;
+        self.0.insert_account(address, account);
+        Ok(())
+    }
+
+    fn set_storage(
+        &mut self,
+        address: Address,
+        slot: U256,
+        value: U256,
+    ) -> Result<(), Self::Error> {
+        self.0.set_storage_at(address, slot.into(), value.into())
+    }
+}
+
 pub struct Backend<N: Network> {
     /// Access to [`revm::Database`] abstraction.
     ///
@@ -2041,14 +2073,19 @@ impl<N: Network> Backend<N> {
         }
 
         // Note: this can only fail in forking mode, in which case we can't recover
-        backend.apply_genesis().await.wrap_err("failed to create genesis")?;
+        let target = if backend.fork.read().is_some() {
+            ProfileGenesisTarget::RemoteFork
+        } else {
+            ProfileGenesisTarget::FreshStandalone
+        };
+        backend.apply_genesis(target).await.wrap_err("failed to create genesis")?;
         Ok(backend)
     }
 
     /// Applies the configured genesis settings
     ///
     /// This will fund, create the genesis accounts
-    async fn apply_genesis(&self) -> Result<(), DatabaseError> {
+    async fn apply_genesis(&self, target: ProfileGenesisTarget) -> Result<(), DatabaseError> {
         trace!(target: "backend", "setting genesis balances");
 
         if self.fork.read().is_some() {
@@ -2094,27 +2131,12 @@ impl<N: Network> Backend<N> {
             }
         }
 
-        let db = self.db.write().await;
-        // apply the genesis.json alloc
-        self.genesis.apply_genesis_json_alloc(db)?;
+        // Apply the genesis.json alloc before profile-owned fields, preserving precedence.
+        self.genesis.apply_genesis_json_alloc(self.db.write().await)?;
 
-        // Seed the HashKey B20 baseline only for fresh standalone state. Forks retain the remote
-        // singleton code and feature admission storage.
-        #[cfg(feature = "hashkey")]
-        if !self.is_fork()
-            && let Some(alloc) = self.network_profile.b20_genesis_alloc()
-        {
-            let mut db = self.db.write().await;
-            for (address, code_hash, nonce) in alloc.markers {
-                db.set_code(address, Bytes::from_static(&[0xef]))?;
-                db.set_nonce(address, nonce)?;
-                debug_assert_eq!(db.basic(address)?.unwrap_or_default().code_hash, code_hash);
-            }
-            for (address, slot, value) in alloc.feature_seeds {
-                db.set_storage_at(address, slot.into(), value.into())?;
-            }
-            trace!(target: "backend", "initialized HashKey B20 standalone genesis state");
-        }
+        let mut db = self.db.write().await;
+        let mut state = AnvilLocalGenesisState(&mut **db);
+        self.network_profile.apply_profile_genesis(target, &mut state)?;
 
         // Initialize Tempo precompiles and fee tokens when in Tempo mode (not in fork mode).
         // In fork mode, precompiles are inherited from the forked origin.
@@ -2250,7 +2272,7 @@ impl<N: Network> Backend<N> {
             self.states.write().clear();
             self.db.write().await.clear();
 
-            self.apply_genesis().await?;
+            self.apply_genesis(ProfileGenesisTarget::RemoteFork).await?;
 
             trace!(target: "backend", "reset fork");
 
@@ -2302,7 +2324,7 @@ impl<N: Network> Backend<N> {
         self.fees.set_gas_price(crate::eth::fees::INITIAL_GAS_PRICE);
 
         // Reapply genesis configuration
-        self.apply_genesis().await?;
+        self.apply_genesis(ProfileGenesisTarget::FreshStandalone).await?;
 
         trace!(target: "backend", "reset to fresh in-memory state");
 
