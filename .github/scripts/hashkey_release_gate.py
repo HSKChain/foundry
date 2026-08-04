@@ -328,6 +328,16 @@ def validate_release_files(root: Path) -> list[str]:
     if "Verify native target host" not in release_workflow:
         errors.append("release workflow must prove native target host architecture")
 
+    launcher = (root / ".github/scripts/hashkey-release-gate.sh").read_text(encoding="utf-8")
+    if "exec " not in launcher or "hashkey_release_gate.py" not in launcher:
+        errors.append("release gate shell must only resolve and exec the Python module")
+    for forbidden in ("run_dependencies", "run_golden", "run_focused", "run_build_matrix", "run_static", "run_full", "case "):
+        if forbidden in launcher:
+            errors.append(f"release gate launcher must not own policy: {forbidden}")
+    smoke_helper = (root / ".github/scripts/hashkey-artifact-smoke.sh").read_text(encoding="utf-8")
+    if "MODE=" in smoke_helper or "basic|execution" in smoke_helper:
+        errors.append("artifact smoke helper must not expose basic/execution modes")
+
     ci_workflow = (root / ".github/workflows/ci-hashkey.yml").read_text(encoding="utf-8")
     if ".github/scripts/hashkey-release-gate.sh source" not in ci_workflow:
         errors.append("HashKey CI must call the canonical source operation")
@@ -1047,7 +1057,7 @@ def _run_standalone_execution(extracted: ExtractedArtifact) -> str:
     helper = Path(__file__).with_name("hashkey-artifact-smoke.sh")
     try:
         result = subprocess.run(
-            ["bash", str(helper), str(extracted.root), "execution"],
+            ["bash", str(helper), str(extracted.root)],
             check=False,
             capture_output=True,
             text=True,
@@ -1121,27 +1131,17 @@ def cargo_metadata(root: Path) -> dict[str, Any]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("operation", nargs="?", choices=("source", "artifact", "metadata"))
+    parser.add_argument("operation", choices=("source", "artifact", "metadata"))
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[2])
     parser.add_argument("--metadata", type=Path)
     parser.add_argument("--upstream-checkout", type=Path)
     parser.add_argument("--archive", type=Path)
     parser.add_argument("--target")
     parser.add_argument("--release-tag")
-    output = parser.add_mutually_exclusive_group()
-    output.add_argument("--print-approved-repository", action="store_true")
-    output.add_argument("--print-approved-revision", action="store_true")
-    output.add_argument("--write-release-metadata", type=Path)
+    parser.add_argument("--write-release-metadata", type=Path)
     parser.add_argument("--tag")
     parser.add_argument("--commit")
     args = parser.parse_args()
-
-    if args.print_approved_repository:
-        print(APPROVED_REPOSITORY)
-        return 0
-    if args.print_approved_revision:
-        print(APPROVED_REVISION)
-        return 0
 
     root = args.root.resolve()
     if args.operation == "source":

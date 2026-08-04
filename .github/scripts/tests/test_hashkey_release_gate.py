@@ -337,22 +337,15 @@ class HashKeyReleaseGateTests(unittest.TestCase):
             "failed",
         )
 
-    def test_cli_exposes_the_approved_upstream_source(self):
-        repository = subprocess.run(
-            [sys.executable, SCRIPT, "--print-approved-repository"],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        revision = subprocess.run(
-            [sys.executable, SCRIPT, "--print-approved-revision"],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-
-        self.assertEqual(repository.stdout.strip(), gate.APPROVED_REPOSITORY)
-        self.assertEqual(revision.stdout.strip(), gate.APPROVED_REVISION)
+    def test_cli_rejects_legacy_pin_print_flags(self):
+        for flag in ("--print-approved-repository", "--print-approved-revision"):
+            result = subprocess.run(
+                [sys.executable, SCRIPT, "metadata", flag],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("unrecognized arguments", result.stderr)
 
     def test_approved_manifest_and_lock_pass(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -584,6 +577,7 @@ tempo-revm = {{ path = "../tempo-spike/crates/revm" }}
                 [
                     sys.executable,
                     SCRIPT,
+                    "metadata",
                     "--root",
                     root,
                     "--write-release-metadata",
