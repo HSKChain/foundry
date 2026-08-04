@@ -256,6 +256,87 @@ class HashKeyReleaseGateTests(unittest.TestCase):
         with self.assertRaises(gate.ArtifactUsageError):
             gate.artifact_adapter(Path("release.bin"))
 
+    def test_target_policy_is_closed_and_maps_archive_and_execution(self):
+        self.assertEqual(
+            set(gate.TARGET_POLICIES),
+            {
+                "x86_64-unknown-linux-gnu",
+                "x86_64-unknown-linux-musl",
+                "aarch64-unknown-linux-gnu",
+                "aarch64-unknown-linux-musl",
+                "x86_64-apple-darwin",
+                "aarch64-apple-darwin",
+                "x86_64-pc-windows-msvc",
+            },
+        )
+        self.assertTrue(gate.TARGET_POLICIES["x86_64-unknown-linux-gnu"].standalone_execution)
+        self.assertTrue(gate.TARGET_POLICIES["x86_64-pc-windows-msvc"].windows)
+        with self.assertRaises(gate.ArtifactUsageError):
+            gate._target_policy("x86_64-unknown-linux-gnuu")
+
+    def test_release_identity_projections_cover_hsk_stable_ordinary_and_nightly(self):
+        self.assertEqual(
+            gate._release_identity_projection("v1.7.1-hsk-b20"),
+            ("hashkey-stable", "1.7.1-hsk-b20", None),
+        )
+        self.assertEqual(
+            gate._release_identity_projection("v1.7.1"),
+            ("stable", "1.7.1", None),
+        )
+        nightly_sha = "a" * 40
+        self.assertEqual(
+            gate._release_identity_projection(f"nightly-{nightly_sha}"),
+            ("nightly", "nightly", nightly_sha),
+        )
+        with self.assertRaises(gate.ArtifactUsageError):
+            gate._release_identity_projection("release-latest")
+
+    def test_artifact_gate_checks_native_surfaces_and_commit_identity(self):
+        archive = self.make_tar()
+        head = "a" * 40
+        identities = [gate.BinaryIdentity("1.7.1-hsk-b20", head)] * 4
+        patches = [
+            mock.patch.object(gate, "_host_matches_target", return_value=True),
+            mock.patch.object(gate, "_probe_artifact_surfaces", return_value=(identities, "probed")),
+            mock.patch.object(gate, "_checkout_head", return_value=head),
+            mock.patch.object(gate, "_run_standalone_execution", return_value="execution"),
+        ]
+        with contextlib.ExitStack() as stack:
+            for patch in patches:
+                stack.enter_context(patch)
+            outcome = gate.run_artifact_gate(
+                gate.ArtifactGateInput(archive, "x86_64-unknown-linux-gnu", "v1.7.1-hsk-b20")
+            )
+        self.assertTrue(outcome.success)
+        self.assertEqual(
+            {result.evidence_id for result in outcome.results},
+            set(gate.ARTIFACT_EVIDENCE_IDS),
+        )
+
+    def test_artifact_gate_fails_closed_on_host_mismatch_and_identity_mismatch(self):
+        archive = self.make_tar()
+        with mock.patch.object(gate, "_host_matches_target", return_value=False):
+            outcome = gate.run_artifact_gate(
+                gate.ArtifactGateInput(archive, "x86_64-unknown-linux-gnu", "v1.7.1-hsk-b20")
+            )
+        self.assertFalse(outcome.success)
+        self.assertEqual(outcome.results[0].evidence_id, "artifact.host")
+
+        head = "a" * 40
+        identities = [gate.BinaryIdentity("1.7.1-hsk-b20", "b" * 40)] * 4
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(gate, "_host_matches_target", return_value=True))
+            stack.enter_context(mock.patch.object(gate, "_probe_artifact_surfaces", return_value=(identities, "probed")))
+            stack.enter_context(mock.patch.object(gate, "_checkout_head", return_value=head))
+            outcome = gate.run_artifact_gate(
+                gate.ArtifactGateInput(archive, "x86_64-unknown-linux-gnu", "v1.7.1-hsk-b20")
+            )
+        self.assertFalse(outcome.success)
+        self.assertEqual(
+            next(result for result in outcome.results if result.evidence_id == "artifact.identity").status,
+            "failed",
+        )
+
     def test_cli_exposes_the_approved_upstream_source(self):
         repository = subprocess.run(
             [sys.executable, SCRIPT, "--print-approved-repository"],

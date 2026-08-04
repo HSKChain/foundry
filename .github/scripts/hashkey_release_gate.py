@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import platform
 import re
 import shlex
 import subprocess
@@ -712,6 +713,44 @@ class ArtifactEvidenceError(ValueError):
 
 
 @dataclass(frozen=True)
+class TargetPolicy:
+    target: str
+    archive_suffix: str
+    windows: bool
+    standalone_execution: bool
+    host_architecture: str
+
+
+TARGET_POLICIES = {
+    policy.target: policy
+    for policy in (
+        TargetPolicy("x86_64-unknown-linux-gnu", ".tar.gz", False, True, "x86_64"),
+        TargetPolicy("x86_64-unknown-linux-musl", ".tar.gz", False, False, "x86_64"),
+        TargetPolicy("aarch64-unknown-linux-gnu", ".tar.gz", False, False, "aarch64"),
+        TargetPolicy("aarch64-unknown-linux-musl", ".tar.gz", False, False, "aarch64"),
+        TargetPolicy("x86_64-apple-darwin", ".tar.gz", False, False, "x86_64"),
+        TargetPolicy("aarch64-apple-darwin", ".tar.gz", False, False, "aarch64"),
+        TargetPolicy("x86_64-pc-windows-msvc", ".zip", True, False, "x86_64"),
+    )
+}
+
+ARTIFACT_EVIDENCE_IDS = ("artifact.archive", "artifact.host", "artifact.surfaces", "artifact.identity", "artifact.execution")
+
+
+@dataclass(frozen=True)
+class ArtifactGateInput:
+    archive: Path
+    target: str
+    release_tag: str
+
+
+@dataclass(frozen=True)
+class BinaryIdentity:
+    version: str
+    commit: str
+
+
+@dataclass(frozen=True)
 class ExtractedArtifact:
     root: Path
     binaries: tuple[Path, ...]
@@ -863,6 +902,175 @@ def artifact_adapter(
     raise ArtifactUsageError("archive must use .tar.gz or .zip suffix")
 
 
+def _target_policy(target: str) -> TargetPolicy:
+    try:
+        return TARGET_POLICIES[target]
+    except KeyError as error:
+        raise ArtifactUsageError(f"unsupported release target: {target}") from error
+
+
+def _host_architecture() -> str:
+    machine = platform.machine().lower()
+    if machine in {"amd64", "x86_64"}:
+        return "x86_64"
+    if machine in {"arm64", "aarch64"}:
+        return "aarch64"
+    return machine
+
+
+def _host_matches_target(policy: TargetPolicy) -> bool:
+    system = platform.system().lower()
+    if policy.host_architecture != _host_architecture():
+        return False
+    if "windows" in policy.target:
+        return system == "windows"
+    if "apple-darwin" in policy.target:
+        return system == "darwin"
+    return system == "linux"
+
+
+def _expected_binary_names(policy: TargetPolicy) -> tuple[str, ...]:
+    suffix = ".exe" if policy.windows else ""
+    return tuple(f"{name}{suffix}" for name in RELEASE_BINARIES)
+
+
+def _release_identity_projection(tag: str) -> tuple[str, str, str | None]:
+    if re.fullmatch(rf"v{re.escape(RELEASE_VERSION)}-hsk-b20(?:[.-][0-9A-Za-z]+)*", tag):
+        return "hashkey-stable", tag[1:], None
+    nightly = re.fullmatch(r"nightly-([0-9a-f]{40})", tag)
+    if nightly:
+        return "nightly", "nightly", nightly.group(1)
+    if re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+(?:[-.][0-9A-Za-z]+)*", tag):
+        return "stable", tag[1:], None
+    raise ArtifactUsageError(f"unsupported release tag: {tag}")
+
+
+def _parse_binary_identity(output: str) -> BinaryIdentity:
+    version_match = re.search(r"^Version:\s*(\S+)\s*$", output, re.MULTILINE)
+    commit_match = re.search(r"^Commit SHA:\s*([0-9a-f]{40})\s*$", output, re.MULTILINE)
+    if version_match is None or commit_match is None:
+        raise ArtifactEvidenceError("binary --version output has no release identity")
+    return BinaryIdentity(version_match.group(1), commit_match.group(1))
+
+
+def _checkout_head() -> str:
+    try:
+        return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise ArtifactEvidenceError(f"cannot resolve release checkout HEAD: {error}") from error
+
+
+def _run_binary(binary: Path, argument: str) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            [str(binary), argument],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ArtifactEvidenceError(f"binary probe failed for {binary.name}: {error}") from error
+
+
+def _probe_artifact_surfaces(
+    binaries: tuple[Path, ...], policy: TargetPolicy
+) -> tuple[list[BinaryIdentity], str]:
+    identities: list[BinaryIdentity] = []
+    for binary in binaries:
+        version = _run_binary(binary, "--version")
+        if version.returncode != 0:
+            raise ArtifactEvidenceError(f"{binary.name} --version failed")
+        help_output = _run_binary(binary, "--help")
+        if help_output.returncode != 0:
+            raise ArtifactEvidenceError(f"{binary.name} --help failed")
+        identities.append(_parse_binary_identity(version.stdout))
+    return identities, f"probed {len(binaries)} native {policy.target} binaries"
+
+
+def _validate_binary_identities(identities: list[BinaryIdentity], tag: str, head: str) -> str:
+    release_class, expected_version, nightly_sha = _release_identity_projection(tag)
+    if nightly_sha is not None and nightly_sha != head:
+        raise ArtifactEvidenceError("nightly release tag does not match checkout HEAD")
+    for identity in identities:
+        if identity.version != expected_version:
+            raise ArtifactEvidenceError(
+                f"binary version {identity.version} does not match {expected_version}"
+            )
+        if not head.startswith(identity.commit):
+            raise ArtifactEvidenceError(
+                f"binary commit {identity.commit} does not match checkout HEAD"
+            )
+    if len({identity.commit for identity in identities}) != 1:
+        raise ArtifactEvidenceError("binary commit identities do not agree")
+    return f"{release_class} identity matches {head}"
+
+
+def _run_standalone_execution(extracted: ExtractedArtifact) -> str:
+    helper = Path(__file__).with_name("hashkey-artifact-smoke.sh")
+    try:
+        result = subprocess.run(
+            ["bash", str(helper), str(extracted.root), "execution"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ArtifactEvidenceError(f"standalone execution failed: {error}") from error
+    if result.returncode != 0:
+        raise ArtifactEvidenceError(result.stderr.strip() or "standalone execution failed")
+    return "standalone HashKey execution passed"
+
+
+def run_artifact_gate(input: ArtifactGateInput) -> GateOutcome:
+    policy = _target_policy(input.target)
+    archive = input.archive.resolve()
+    if not archive.is_file():
+        raise ArtifactUsageError(f"archive does not exist: {archive}")
+    if not archive.name.lower().endswith(policy.archive_suffix):
+        raise ArtifactUsageError(
+            f"target {policy.target} requires a {policy.archive_suffix} archive"
+        )
+    if not _host_matches_target(policy):
+        return GateOutcome(
+            "artifact",
+            (EvidenceResult("artifact.host", "failed", f"host does not match {policy.target}"),),
+            False,
+        )
+
+    expected_names = _expected_binary_names(policy)
+    try:
+        adapter = artifact_adapter(archive, expected_names=expected_names)
+        with adapter.extract() as extracted:
+            results = [EvidenceResult("artifact.archive", "passed", "archive preflight and extraction passed")]
+            results.append(EvidenceResult("artifact.host", "passed", f"native host matches {policy.target}"))
+            try:
+                identities, summary = _probe_artifact_surfaces(extracted.binaries, policy)
+                results.append(EvidenceResult("artifact.surfaces", "passed", summary))
+            except ArtifactEvidenceError as error:
+                results.append(EvidenceResult("artifact.surfaces", "failed", str(error)))
+                return GateOutcome("artifact", tuple(results), False)
+            try:
+                results.append(EvidenceResult("artifact.identity", "passed", _validate_binary_identities(identities, input.release_tag, _checkout_head())))
+            except ArtifactEvidenceError as error:
+                results.append(EvidenceResult("artifact.identity", "failed", str(error)))
+            if policy.standalone_execution:
+                try:
+                    results.append(EvidenceResult("artifact.execution", "passed", _run_standalone_execution(extracted)))
+                except ArtifactEvidenceError as error:
+                    results.append(EvidenceResult("artifact.execution", "failed", str(error)))
+            else:
+                results.append(EvidenceResult("artifact.execution", "passed", "not required for this target"))
+            return GateOutcome("artifact", tuple(results), all(result.status == "passed" for result in results))
+    except ArtifactEvidenceError as error:
+        return GateOutcome(
+            "artifact",
+            (EvidenceResult("artifact.archive", "failed", str(error)),),
+            False,
+        )
+
+
 def cargo_metadata(root: Path) -> dict[str, Any]:
     result = subprocess.run(
         ["cargo", "metadata", "--locked", "--all-features", "--format-version", "1"],
@@ -876,10 +1084,13 @@ def cargo_metadata(root: Path) -> dict[str, Any]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("operation", nargs="?", choices=("source", "metadata"))
+    parser.add_argument("operation", nargs="?", choices=("source", "artifact", "metadata"))
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[2])
     parser.add_argument("--metadata", type=Path)
     parser.add_argument("--upstream-checkout", type=Path)
+    parser.add_argument("--archive", type=Path)
+    parser.add_argument("--target")
+    parser.add_argument("--release-tag")
     output = parser.add_mutually_exclusive_group()
     output.add_argument("--print-approved-repository", action="store_true")
     output.add_argument("--print-approved-revision", action="store_true")
@@ -898,6 +1109,23 @@ def main() -> int:
     root = args.root.resolve()
     if args.operation == "source":
         outcome = run_source_gate(SourceGateInput(root, args.upstream_checkout))
+        for result in outcome.results:
+            print(
+                f"{result.status}: {result.evidence_id}: {result.summary}",
+                file=sys.stderr,
+            )
+        return 0 if outcome.success else 1
+    if args.operation == "artifact":
+        if args.archive is None or args.target is None or args.release_tag is None:
+            print("error: artifact requires --archive, --target, and --release-tag", file=sys.stderr)
+            return 2
+        try:
+            outcome = run_artifact_gate(
+                ArtifactGateInput(args.archive, args.target, args.release_tag)
+            )
+        except ArtifactUsageError as error:
+            print(f"error: {error}", file=sys.stderr)
+            return 2
         for result in outcome.results:
             print(
                 f"{result.status}: {result.evidence_id}: {result.summary}",
