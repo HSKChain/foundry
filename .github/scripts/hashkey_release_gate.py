@@ -7,11 +7,15 @@ import argparse
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
+import tempfile
 import tomllib
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, Protocol
 
 
 # Workspace runtime test commands execute in debug test harness threads whose
@@ -64,6 +68,64 @@ ALLOY_CORE_PACKAGES = (
     "alloy-dyn-abi",
 )
 SINGLETON_PACKAGES = (*ALLOY_CORE_PACKAGES, "alloy-evm", "revm")
+
+SOURCE_EVIDENCE_IDS = (
+    "gate-contract",
+    "locked-dependency-graph",
+    "documentation-contract",
+    "standard-builds",
+    "no-default-build",
+    "static",
+    "golden.asset",
+    "golden.stablecoin",
+    "golden.factory",
+    "golden.policy",
+    "foundry-conformance",
+    "cli.forge",
+    "cli.anvil",
+    "cli.cast",
+    "cli.chisel",
+    "non-hashkey-regression",
+    "full-workspace",
+)
+
+
+@dataclass(frozen=True)
+class SourceGateInput:
+    root: Path
+    upstream_checkout: Path | None = None
+
+
+@dataclass(frozen=True)
+class EvidenceResult:
+    evidence_id: str
+    status: Literal["passed", "failed", "blocked"]
+    summary: str
+
+
+@dataclass(frozen=True)
+class GateOutcome:
+    phase: Literal["source", "artifact"]
+    results: tuple[EvidenceResult, ...]
+    success: bool
+
+
+class _CommandExecutor(Protocol):
+    def run(self, command: list[str], *, cwd: Path, env: dict[str, str]) -> int: ...
+
+
+class _HostCommandExecutor:
+    def run(self, command: list[str], *, cwd: Path, env: dict[str, str]) -> int:
+        rendered = shlex.join(command)
+        print(f"[hashkey-source] {rendered}", file=sys.stderr)
+        try:
+            return subprocess.run(command, cwd=cwd, env=env, check=False).returncode
+        except OSError as error:
+            print(f"[hashkey-source] {error}", file=sys.stderr)
+            return 127
+
+
+_executor_factory = _HostCommandExecutor
 
 
 def load_toml(path: Path) -> dict[str, Any]:
@@ -344,6 +406,264 @@ def validate_metadata(metadata: dict[str, Any]) -> list[str]:
     return errors
 
 
+def _command(
+    executor: _CommandExecutor,
+    root: Path,
+    command: list[str],
+    *,
+    env: dict[str, str] | None = None,
+) -> tuple[bool, str]:
+    result = executor.run(
+        command,
+        cwd=root,
+        env=workspace_test_environment() if env is None else env,
+    )
+    return result == 0, shlex.join(command)
+
+
+def _command_group(
+    executor: _CommandExecutor,
+    root: Path,
+    commands: list[list[str]],
+    *,
+    env: dict[str, str] | None = None,
+) -> tuple[bool, str]:
+    rendered: list[str] = []
+    passed = True
+    for command in commands:
+        command_passed, command_rendered = _command(executor, root, command, env=env)
+        rendered.append(command_rendered)
+        passed = command_passed and passed
+    return passed, "; ".join(rendered)
+
+
+@contextmanager
+def _upstream_checkout(
+    root: Path, provided: Path | None
+):
+    if provided is not None:
+        checkout = provided.resolve()
+        try:
+            top_level = Path(
+                subprocess.check_output(
+                    ["git", "-C", str(checkout), "rev-parse", "--show-toplevel"],
+                    text=True,
+                ).strip()
+            ).resolve()
+            revision = subprocess.check_output(
+                ["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True
+            ).strip()
+        except (OSError, subprocess.CalledProcessError) as error:
+            raise RuntimeError(f"invalid upstream checkout: {error}") from error
+        if top_level != checkout:
+            raise RuntimeError("provided upstream path must be the checkout root")
+        if revision != APPROVED_REVISION:
+            raise RuntimeError(
+                f"upstream checkout is {revision}, expected {APPROVED_REVISION}"
+            )
+        dirty = subprocess.run(
+            ["git", "-C", str(checkout), "status", "--porcelain", "--ignored"],
+            check=False,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        if dirty:
+            raise RuntimeError("provided upstream checkout is not clean")
+        if (checkout / ".gitmodules").exists():
+            raise RuntimeError("provided upstream checkout contains .gitmodules")
+        yield checkout, None
+        return
+
+    with tempfile.TemporaryDirectory(prefix="hashkey-optimism-") as temporary:
+        checkout = Path(temporary) / "optimism"
+        try:
+            subprocess.run(["git", "init", "--quiet", str(checkout)], check=True)
+            subprocess.run(
+                ["git", "-C", str(checkout), "remote", "add", "origin", APPROVED_REPOSITORY],
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(checkout), "fetch", "--quiet", "--depth", "1", "origin", APPROVED_REVISION],
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(checkout), "checkout", "--quiet", "--detach", "FETCH_HEAD"],
+                check=True,
+            )
+        except (OSError, subprocess.CalledProcessError) as error:
+            raise RuntimeError(f"managed upstream acquisition failed: {error}") from error
+        yield checkout, Path(temporary)
+
+
+def _golden_command(upstream: Path, suite: str) -> list[str]:
+    return [
+        "cargo",
+        "test",
+        "--locked",
+        "--manifest-path",
+        str(upstream / "rust/Cargo.toml"),
+        "-p",
+        "hsk-b20-precompiles",
+        "--features",
+        "test-utils",
+        "--test",
+        suite,
+    ]
+
+
+def _source_result(
+    evidence_id: str,
+    executor: _CommandExecutor,
+    root: Path,
+    commands: list[list[str]],
+    *,
+    env: dict[str, str] | None = None,
+) -> EvidenceResult:
+    try:
+        passed, rendered = _command_group(executor, root, commands, env=env)
+    except Exception as error:
+        return EvidenceResult(evidence_id, "failed", f"{type(error).__name__}: {error}")
+    return EvidenceResult(
+        evidence_id,
+        "passed" if passed else "failed",
+        rendered if passed else f"command failed: {rendered}",
+    )
+
+
+def _source_validation_result(
+    evidence_id: str, root: Path, validators: list[Any]
+) -> EvidenceResult:
+    errors: list[str] = []
+    for validator in validators:
+        errors.extend(validator(root))
+    return EvidenceResult(
+        evidence_id,
+        "passed" if not errors else "failed",
+        "validation passed" if not errors else "; ".join(errors),
+    )
+
+
+def run_source_gate(input: SourceGateInput) -> GateOutcome:
+    root = input.root.resolve()
+    executor = _executor_factory()
+    results: list[EvidenceResult] = []
+
+    results.append(
+        _source_result(
+            "gate-contract",
+            executor,
+            root,
+            [[sys.executable, str(Path(__file__).resolve().parent / "tests/test_hashkey_release_gate.py")]],
+        )
+    )
+    results.append(
+        _source_result(
+            "locked-dependency-graph",
+            executor,
+            root,
+            [["cargo", "metadata", "--locked", "--all-features", "--format-version", "1"]],
+        )
+    )
+    results.append(
+        _source_validation_result(
+            "documentation-contract",
+            root,
+            [validate_dependency_files, validate_release_identity, validate_release_files],
+        )
+    )
+    results.append(
+        _source_result(
+            "standard-builds",
+            executor,
+            root,
+            [
+                ["cargo", "build", "--workspace", "--locked"],
+                ["cargo", "build", "--locked", "-p", "forge@1.7.1", "-p", "cast@1.7.1", "-p", "anvil@1.7.1", "-p", "chisel@1.7.1", "--features", "hashkey"],
+            ],
+        )
+    )
+    results.append(
+        _source_result(
+            "no-default-build",
+            executor,
+            root,
+            [["cargo", "build", "--workspace", "--no-default-features", "--locked"]],
+        )
+    )
+    results.append(
+        _source_result(
+            "static",
+            executor,
+            root,
+            [
+                ["cargo", "+nightly", "fmt", "--all", "--", "--check"],
+                ["cargo", "+nightly", "clippy", "-p", "foundry-evm-core@1.7.1", "--all-targets", "--features", "hashkey", "--locked"],
+                ["cargo", "+nightly", "clippy", "-p", "foundry-evm-networks@1.7.1", "--all-targets", "--all-features", "--locked"],
+                ["cargo", "+nightly", "clippy", "-p", "chisel@1.7.1", "--all-targets", "--features", "hashkey", "--locked"],
+            ],
+        )
+    )
+
+    try:
+        with _upstream_checkout(root, input.upstream_checkout) as (upstream, target_dir):
+            golden_env = workspace_test_environment()
+            if target_dir is not None:
+                golden_env["CARGO_TARGET_DIR"] = str(target_dir / "target")
+            for evidence_id, suite in zip(
+                SOURCE_EVIDENCE_IDS[6:10],
+                (
+                    "b20_asset_v1_golden",
+                    "b20_stablecoin_v1_golden",
+                    "b20_factory_v1_golden",
+                    "b20_policy_v1_golden",
+                ),
+            ):
+                results.append(
+                    _source_result(
+                        evidence_id,
+                        executor,
+                        root,
+                        [_golden_command(upstream, suite)],
+                        env=golden_env,
+                    )
+                )
+    except RuntimeError as error:
+        for evidence_id in SOURCE_EVIDENCE_IDS[6:10]:
+            results.append(EvidenceResult(evidence_id, "blocked", str(error)))
+
+    focused = {
+        "foundry-conformance": [["cargo", "test", "--locked", "-p", "foundry-evm-core@1.7.1", "--features", "hashkey", "--test", "hashkey"]],
+        "cli.forge": [["cargo", "test", "--locked", "-p", "forge@1.7.1", "--test", "cli", "--features", "hashkey", "hashkey::"]],
+        "cli.anvil": [["cargo", "test", "--locked", "-p", "anvil@1.7.1", "--test", "it", "--features", "hashkey", "hashkey::"]],
+        "cli.cast": [["cargo", "test", "--locked", "-p", "cast@1.7.1", "--test", "cli", "--features", "hashkey", "hashkey::hashkey_b20_anvil_cast_workflow", "--", "--exact"]],
+        "cli.chisel": [["cargo", "test", "--locked", "-p", "chisel@1.7.1", "--test", "it", "--features", "hashkey", "repl::hashkey_b20_stateful_session", "--", "--exact"]],
+    }
+    for evidence_id in SOURCE_EVIDENCE_IDS[10:15]:
+        results.append(_source_result(evidence_id, executor, root, focused[evidence_id]))
+
+    results.append(
+        _source_result(
+            "non-hashkey-regression",
+            executor,
+            root,
+            [["cargo", "nextest", "run", "--workspace", "--no-default-features", "--locked", "--no-fail-fast"]],
+        )
+    )
+    results.append(
+        _source_result(
+            "full-workspace",
+            executor,
+            root,
+            [["cargo", "nextest", "run", "--workspace", "--all-features", "--locked", "--no-fail-fast"]],
+        )
+    )
+    return GateOutcome(
+        "source",
+        tuple(results),
+        all(result.status == "passed" for result in results),
+    )
+
+
 def cargo_metadata(root: Path) -> dict[str, Any]:
     result = subprocess.run(
         ["cargo", "metadata", "--locked", "--all-features", "--format-version", "1"],
@@ -357,8 +677,10 @@ def cargo_metadata(root: Path) -> dict[str, Any]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
+    parser.add_argument("operation", nargs="?", choices=("source", "metadata"))
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[2])
     parser.add_argument("--metadata", type=Path)
+    parser.add_argument("--upstream-checkout", type=Path)
     output = parser.add_mutually_exclusive_group()
     output.add_argument("--print-approved-repository", action="store_true")
     output.add_argument("--print-approved-revision", action="store_true")
@@ -375,6 +697,15 @@ def main() -> int:
         return 0
 
     root = args.root.resolve()
+    if args.operation == "source":
+        outcome = run_source_gate(SourceGateInput(root, args.upstream_checkout))
+        for result in outcome.results:
+            print(
+                f"{result.status}: {result.evidence_id}: {result.summary}",
+                file=sys.stderr,
+            )
+        return 0 if outcome.success else 1
+
     errors = validate_dependency_files(root)
     errors.extend(validate_release_identity(root))
     errors.extend(validate_release_files(root))

@@ -5,9 +5,11 @@ import json
 import os
 import subprocess
 import sys
+import contextlib
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 sys.dont_write_bytecode = True
@@ -15,10 +17,102 @@ SCRIPT = Path(__file__).parents[1] / "hashkey_release_gate.py"
 SPEC = importlib.util.spec_from_file_location("hashkey_release_gate", SCRIPT)
 gate = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
+sys.modules[SPEC.name] = gate
 SPEC.loader.exec_module(gate)
 
 
 class HashKeyReleaseGateTests(unittest.TestCase):
+    class RecordingExecutor:
+        def __init__(self, fail_fragments=()):
+            self.commands = []
+            self.fail_fragments = tuple(fail_fragments)
+
+        def run(self, command, *, cwd, env):
+            self.commands.append((command, cwd, env))
+            rendered = " ".join(command)
+            return int(any(fragment in rendered for fragment in self.fail_fragments))
+
+    def run_recorded_source(self, fail_fragments=()):
+        executor = self.RecordingExecutor(fail_fragments)
+        checkout = Path(__file__).parents[2]
+        patches = [
+            mock.patch.object(gate, "_executor_factory", return_value=executor),
+            mock.patch.object(
+                gate,
+                "_upstream_checkout",
+                return_value=contextlib.nullcontext((checkout, None)),
+            ),
+            mock.patch.object(gate, "validate_dependency_files", return_value=[]),
+            mock.patch.object(gate, "validate_release_identity", return_value=[]),
+            mock.patch.object(gate, "validate_release_files", return_value=[]),
+        ]
+        with contextlib.ExitStack() as stack:
+            for patch in patches:
+                stack.enter_context(patch)
+            outcome = gate.run_source_gate(gate.SourceGateInput(checkout))
+        return outcome, executor
+
+    def test_source_plan_contains_exact_required_evidence_ids(self):
+        self.assertEqual(
+            gate.SOURCE_EVIDENCE_IDS,
+            (
+                "gate-contract",
+                "locked-dependency-graph",
+                "documentation-contract",
+                "standard-builds",
+                "no-default-build",
+                "static",
+                "golden.asset",
+                "golden.stablecoin",
+                "golden.factory",
+                "golden.policy",
+                "foundry-conformance",
+                "cli.forge",
+                "cli.anvil",
+                "cli.cast",
+                "cli.chisel",
+                "non-hashkey-regression",
+                "full-workspace",
+            ),
+        )
+
+    def test_source_gate_runs_full_workspace_and_non_hashkey_regression_once(self):
+        outcome, executor = self.run_recorded_source()
+        self.assertTrue(outcome.success)
+        commands = [" ".join(command) for command, _, _ in executor.commands]
+        self.assertEqual(
+            sum("--no-default-features --locked --no-fail-fast" in command for command in commands),
+            1,
+        )
+        self.assertEqual(
+            sum("--all-features --locked --no-fail-fast" in command for command in commands),
+            1,
+        )
+
+    def test_source_gate_preserves_early_failure_when_last_command_passes(self):
+        outcome, executor = self.run_recorded_source(("test_hashkey_release_gate.py",))
+        self.assertFalse(outcome.success)
+        self.assertEqual(outcome.results[-1].status, "passed")
+        self.assertEqual(outcome.results[0].status, "failed")
+        self.assertGreater(len(executor.commands), 1)
+
+    def test_source_gate_retains_multiple_independent_failures(self):
+        outcome, _ = self.run_recorded_source(("cargo metadata", "cargo nextest"))
+        self.assertFalse(outcome.success)
+        failed = {result.evidence_id for result in outcome.results if result.status == "failed"}
+        self.assertIn("locked-dependency-graph", failed)
+        self.assertIn("non-hashkey-regression", failed)
+        self.assertIn("full-workspace", failed)
+
+    def test_source_commands_own_stack_and_required_cargo_flags(self):
+        outcome, executor = self.run_recorded_source()
+        self.assertTrue(outcome.success)
+        for _, _, env in executor.commands:
+            self.assertEqual(env["RUST_MIN_STACK"], gate.TEST_RUST_MIN_STACK)
+        commands = [" ".join(command) for command, _, _ in executor.commands]
+        self.assertTrue(any("--locked" in command for command in commands))
+        self.assertTrue(any("--no-fail-fast" in command for command in commands))
+
     def test_cli_exposes_the_approved_upstream_source(self):
         repository = subprocess.run(
             [sys.executable, SCRIPT, "--print-approved-repository"],
