@@ -65,7 +65,7 @@ use foundry_evm::{
     revm::interpreter::InstructionResult,
     traces::{TraceMode, Traces},
 };
-use foundry_evm_networks::ResolvedNetworkProfile;
+use foundry_evm_networks::{EvmFamily, ResolvedNetworkProfile};
 use foundry_wallets::MultiWalletOpts;
 use serde::Serialize;
 use std::path::PathBuf;
@@ -313,31 +313,33 @@ impl ScriptArgs {
         trace!(target: "script", "executing script command");
 
         let (config, resolved) = self.resolved_evm_opts().await?;
-        let network_profile = resolved.network_profile();
+        let family = resolved.network_profile().evm_family();
 
-        let is_tempo = network_profile.is_tempo();
-
-        if self.batch && !is_tempo {
+        if self.batch && family != EvmFamily::Tempo {
             eyre::bail!("--batch mode is only supported on Tempo networks");
         }
 
-        if is_tempo {
-            let batch = self.batch;
-            let bundled = match self.prepare_bundled::<TempoEvmNetwork>(config, resolved).await? {
-                Some(bundled) => bundled,
-                None => return Ok(()),
-            };
-            let bundled = bundled.wait_for_pending().await?;
-            let broadcasted =
-                if batch { bundled.broadcast_batch().await? } else { bundled.broadcast().await? };
-            if broadcasted.args.verify {
-                broadcasted.verify().await?;
+        match family {
+            EvmFamily::Tempo => {
+                let batch = self.batch;
+                let bundled =
+                    match self.prepare_bundled::<TempoEvmNetwork>(config, resolved).await? {
+                        Some(bundled) => bundled,
+                        None => return Ok(()),
+                    };
+                let bundled = bundled.wait_for_pending().await?;
+                let broadcasted = if batch {
+                    bundled.broadcast_batch().await?
+                } else {
+                    bundled.broadcast().await?
+                };
+                if broadcasted.args.verify {
+                    broadcasted.verify().await?;
+                }
+                Ok(())
             }
-            Ok(())
-        } else if network_profile.is_optimism() {
-            self.run_generic_script::<OpEvmNetwork>(config, resolved).await
-        } else {
-            self.run_generic_script::<EthEvmNetwork>(config, resolved).await
+            EvmFamily::Optimism => self.run_generic_script::<OpEvmNetwork>(config, resolved).await,
+            EvmFamily::Ethereum => self.run_generic_script::<EthEvmNetwork>(config, resolved).await,
         }
     }
 

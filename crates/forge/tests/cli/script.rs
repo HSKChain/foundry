@@ -3686,6 +3686,107 @@ contract ArbScript is Script {
     }
 );
 
+// `--batch` is a Tempo-only capability: any other family must fail before execution with the
+// existing user-facing diagnostic and no stdout output.
+forgetest_async!(script_batch_rejects_non_tempo_network, |prj, cmd| {
+    foundry_test_utils::util::initialize(prj.root());
+
+    let script = prj.add_source(
+        "BatchOnly",
+        r#"
+import "forge-std/Script.sol";
+contract BatchOnly is Script {
+    function run() external {
+        vm.startBroadcast();
+        vm.stopBroadcast();
+    }
+}
+"#,
+    );
+
+    let (_api, handle) = spawn(NodeConfig::test()).await;
+
+    cmd.arg("script")
+        .arg(script)
+        .args([
+            "--rpc-url",
+            handle.http_endpoint().as_str(),
+            "--private-key",
+            "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
+            "--broadcast",
+            "--batch",
+        ])
+        .assert_failure()
+        .stdout_eq(str![[r#""#]])
+        .stderr_eq(str![[r#"
+Error: --batch mode is only supported on Tempo networks
+
+"#]]);
+});
+
+// Tempo batch broadcast executes the whole script as a single atomic batch transaction on a
+// Tempo node: every recorded call must share one transaction hash. Atomicity and revert
+// semantics are exercised end-to-end by `.github/scripts/tempo-check.sh` against a live RPC.
+forgetest_async!(script_batch_broadcasts_on_tempo, |prj, cmd| {
+    foundry_test_utils::util::initialize(prj.root());
+
+    let script = prj.add_source(
+        "BatchDeploy",
+        r#"
+import "forge-std/Script.sol";
+contract BatchDeploy is Script {
+    function run() external {
+        vm.startBroadcast();
+        Counter counter = new Counter();
+        counter.increment();
+        counter.increment();
+        vm.stopBroadcast();
+    }
+}
+contract Counter {
+    uint256 public number;
+    function increment() external { number++; }
+}
+"#,
+    );
+
+    let (_api, handle) = spawn(NodeConfig::test_tempo()).await;
+    let dev = handle.dev_accounts().next().unwrap();
+
+    cmd.arg("script")
+        .arg(script)
+        .args([
+            "--tc",
+            "BatchDeploy",
+            "--rpc-url",
+            &handle.http_endpoint(),
+            "--sender",
+            format!("{dev:?}").as_str(),
+            "--unlocked",
+            "--broadcast",
+            "--batch",
+        ])
+        .assert_success();
+
+    assert_single_batch_transaction(prj.root());
+});
+
+/// Asserts that the broadcast artifact recorded every call under one shared transaction hash,
+/// proving the script landed as a single Tempo batch transaction.
+fn assert_single_batch_transaction(root: &std::path::Path) {
+    let run_latest = foundry_common::fs::json_files(&root.join("broadcast"))
+        .find(|file| file.ends_with("run-latest.json"))
+        .expect("no broadcast artifact found");
+
+    let json: Value = foundry_common::fs::read_json_file(&run_latest).unwrap();
+    let txs = json["transactions"].as_array().unwrap();
+    assert!(txs.len() >= 2, "expected multiple calls in one batch, got {}", txs.len());
+
+    let hashes: std::collections::HashSet<_> =
+        txs.iter().filter_map(|t| t["hash"].as_str()).collect();
+    assert_eq!(hashes.len(), 1, "all batch calls must share one transaction hash");
+}
+
 // Tests that `forge script` works in Tempo mode without CreateCollision.
 // Tempo genesis pre-deploys the Arachnid CREATE2 factory at the same address as the default
 // CREATE2 deployer, so `deploy_create2_deployer` must be skipped to avoid a collision.
