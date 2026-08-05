@@ -2229,7 +2229,7 @@ dependencies = [
 [[package]]
 name = "b20-precompile-macros"
 version = "0.1.0"
-source = "git+https://github.com/HSKChain/optimism?rev=efbccbcd344fd4b395032816c0bf5756b3995fb6#efbccbcd344fd4b395032816c0bf5756b3995fb6"
+source = "git+https://github.com/HSKChain/optimism?rev=ab1d97f342299b62964eabcccde404e76481eb7a#ab1d97f342299b62964eabcccde404e76481eb7a"
 dependencies = [
  "alloy-primitives",
  "proc-macro2",
@@ -2240,7 +2240,7 @@ dependencies = [
 [[package]]
 name = "b20-precompile-storage"
 version = "0.1.0"
-source = "git+https://github.com/HSKChain/optimism?rev=efbccbcd344fd4b395032816c0bf5756b3995fb6#efbccbcd344fd4b395032816c0bf5756b3995fb6"
+source = "git+https://github.com/HSKChain/optimism?rev=ab1d97f342299b62964eabcccde404e76481eb7a#ab1d97f342299b62964eabcccde404e76481eb7a"
 dependencies = [
  "alloy-evm",
  "alloy-primitives",
@@ -6408,7 +6408,7 @@ dependencies = [
 [[package]]
 name = "hsk-b20-config"
 version = "0.1.0"
-source = "git+https://github.com/HSKChain/optimism?rev=efbccbcd344fd4b395032816c0bf5756b3995fb6#efbccbcd344fd4b395032816c0bf5756b3995fb6"
+source = "git+https://github.com/HSKChain/optimism?rev=ab1d97f342299b62964eabcccde404e76481eb7a#ab1d97f342299b62964eabcccde404e76481eb7a"
 dependencies = [
  "alloy-primitives",
 ]
@@ -6416,7 +6416,7 @@ dependencies = [
 [[package]]
 name = "hsk-b20-precompiles"
 version = "0.1.0"
-source = "git+https://github.com/HSKChain/optimism?rev=efbccbcd344fd4b395032816c0bf5756b3995fb6#efbccbcd344fd4b395032816c0bf5756b3995fb6"
+source = "git+https://github.com/HSKChain/optimism?rev=ab1d97f342299b62964eabcccde404e76481eb7a#ab1d97f342299b62964eabcccde404e76481eb7a"
 dependencies = [
  "alloy-evm",
  "alloy-primitives",

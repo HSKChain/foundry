@@ -42,7 +42,7 @@ def workspace_test_environment() -> dict[str, str]:
 
 
 APPROVED_REPOSITORY = "https://github.com/HSKChain/optimism"
-APPROVED_REVISION = "efbccbcd344fd4b395032816c0bf5756b3995fb6"
+APPROVED_REVISION = "ab1d97f342299b62964eabcccde404e76481eb7a"
 RELEASE_VERSION = "1.7.1"
 HSK_RELEASE_TAG_PATTERN = rf"v{re.escape(RELEASE_VERSION)}-hsk-b20(?:[.-][0-9A-Za-z]+)*"
 ORDINARY_RELEASE_TAG_PATTERN = r"v[0-9]+\.[0-9]+\.[0-9]+(?:[-.][0-9A-Za-z]+)*"
