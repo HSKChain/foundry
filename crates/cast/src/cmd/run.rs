@@ -44,26 +44,9 @@ use foundry_evm::{
     },
     traces::{InternalTraceMode, TraceMode, Traces},
 };
-use foundry_evm_networks::{NetworkConfigs, ResolvedNetworkProfile};
+use foundry_evm_networks::{EvmFamily, NetworkConfigs};
 use futures::TryFutureExt;
 use revm::{DatabaseRef, context::Block};
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum NetworkDispatchKind {
-    Tempo,
-    Optimism,
-    Ethereum,
-}
-
-pub(super) const fn network_dispatch_kind(profile: ResolvedNetworkProfile) -> NetworkDispatchKind {
-    if profile.is_tempo() {
-        NetworkDispatchKind::Tempo
-    } else if profile.is_optimism() {
-        NetworkDispatchKind::Optimism
-    } else {
-        NetworkDispatchKind::Ethereum
-    }
-}
 
 /// CLI arguments for `cast run`.
 #[derive(Clone, Debug, Parser)]
@@ -152,10 +135,10 @@ impl RunArgs {
             .resolve_evm_opts_async(evm_opts, NetworkIntent::new().with_fork_identity())
             .await?;
 
-        match network_dispatch_kind(resolved.network_profile()) {
-            NetworkDispatchKind::Tempo => self.run_with_evm::<TempoEvmNetwork>(resolved).await,
-            NetworkDispatchKind::Optimism => self.run_with_evm::<OpEvmNetwork>(resolved).await,
-            NetworkDispatchKind::Ethereum => self.run_with_evm::<EthEvmNetwork>(resolved).await,
+        match resolved.network_profile().evm_family() {
+            EvmFamily::Ethereum => self.run_with_evm::<EthEvmNetwork>(resolved).await,
+            EvmFamily::Optimism => self.run_with_evm::<OpEvmNetwork>(resolved).await,
+            EvmFamily::Tempo => self.run_with_evm::<TempoEvmNetwork>(resolved).await,
         }
     }
 
@@ -435,23 +418,6 @@ impl figment::Provider for RunArgs {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn cast_execution_dispatches_from_resolved_profiles() {
-        assert_eq!(
-            network_dispatch_kind(NetworkConfigs::default().resolve()),
-            NetworkDispatchKind::Ethereum
-        );
-        assert_eq!(
-            network_dispatch_kind(NetworkConfigs::with_tempo().resolve()),
-            NetworkDispatchKind::Tempo
-        );
-        #[cfg(feature = "hashkey")]
-        assert_eq!(
-            network_dispatch_kind(NetworkConfigs::with_hashkey().resolve()),
-            NetworkDispatchKind::Optimism
-        );
-    }
 
     #[cfg(feature = "hashkey")]
     #[test]

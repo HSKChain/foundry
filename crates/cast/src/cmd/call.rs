@@ -1,4 +1,4 @@
-use super::run::{NetworkDispatchKind, fetch_contracts_bytecode_from_trace, network_dispatch_kind};
+use super::run::fetch_contracts_bytecode_from_trace;
 use crate::{
     Cast,
     debug::handle_traces,
@@ -48,6 +48,7 @@ use foundry_evm::{
     },
     traces::{InternalTraceMode, TraceMode},
 };
+use foundry_evm_networks::EvmFamily;
 use foundry_wallets::WalletOpts;
 use regex::Regex;
 use std::{str::FromStr, sync::LazyLock};
@@ -242,10 +243,10 @@ impl CallArgs {
             .resolve_evm_opts_async(evm_opts, intent)
             .await?;
 
-        match network_dispatch_kind(resolved.network_profile()) {
-            NetworkDispatchKind::Tempo => self.run_with_network::<TempoEvmNetwork>(resolved).await,
-            NetworkDispatchKind::Optimism => self.run_with_network::<OpEvmNetwork>(resolved).await,
-            NetworkDispatchKind::Ethereum => self.run_with_network::<EthEvmNetwork>(resolved).await,
+        match resolved.network_profile().evm_family() {
+            EvmFamily::Ethereum => self.run_with_network::<EthEvmNetwork>(resolved).await,
+            EvmFamily::Optimism => self.run_with_network::<OpEvmNetwork>(resolved).await,
+            EvmFamily::Tempo => self.run_with_network::<TempoEvmNetwork>(resolved).await,
         }
     }
 

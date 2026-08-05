@@ -12,27 +12,10 @@ use foundry_evm::{
         CommandProfileResolution, NetworkIntent, ResolvedEvmOpts, RpcForkIdentitySource,
     },
 };
-use foundry_evm_networks::{NetworkConfigs, ResolvedNetworkProfile};
+use foundry_evm_networks::{EvmFamily, NetworkConfigs, ResolvedNetworkProfile};
 use rustyline::{Editor, config::Configurer, error::ReadlineError};
 use std::{ops::ControlFlow, path::PathBuf};
 use yansi::Paint;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ChiselExecutionKind {
-    Ethereum,
-    Optimism,
-    Tempo,
-}
-
-const fn chisel_execution_kind(profile: ResolvedNetworkProfile) -> ChiselExecutionKind {
-    if profile.is_tempo() {
-        ChiselExecutionKind::Tempo
-    } else if profile.is_optimism() {
-        ChiselExecutionKind::Optimism
-    } else {
-        ChiselExecutionKind::Ethereum
-    }
-}
 
 /// Run the `chisel` command line interface.
 pub fn run() -> Result<()> {
@@ -116,15 +99,15 @@ pub async fn run_command(args: Chisel) -> Result<()> {
         resolved_network_configs(resolved.network_profile())
     };
 
-    match chisel_execution_kind(resolved.network_profile()) {
-        ChiselExecutionKind::Tempo => {
-            run_command_with_network::<TempoEvmNetwork>(args, config, resolved).await
+    match resolved.network_profile().evm_family() {
+        EvmFamily::Ethereum => {
+            run_command_with_network::<EthEvmNetwork>(args, config, resolved).await
         }
-        ChiselExecutionKind::Optimism => {
+        EvmFamily::Optimism => {
             run_command_with_network::<OpEvmNetwork>(args, config, resolved).await
         }
-        ChiselExecutionKind::Ethereum => {
-            run_command_with_network::<EthEvmNetwork>(args, config, resolved).await
+        EvmFamily::Tempo => {
+            run_command_with_network::<TempoEvmNetwork>(args, config, resolved).await
         }
     }
 }
@@ -275,23 +258,6 @@ mod tests {
         EvmOpts,
         resolution::{ForkIdentity, InMemoryForkIdentitySource},
     };
-
-    #[test]
-    fn chisel_dispatches_from_resolved_profiles() {
-        assert_eq!(
-            chisel_execution_kind(NetworkConfigs::default().resolve()),
-            ChiselExecutionKind::Ethereum
-        );
-        assert_eq!(
-            chisel_execution_kind(NetworkConfigs::with_tempo().resolve()),
-            ChiselExecutionKind::Tempo
-        );
-        #[cfg(feature = "hashkey")]
-        assert_eq!(
-            chisel_execution_kind(NetworkConfigs::with_hashkey().resolve()),
-            ChiselExecutionKind::Optimism
-        );
-    }
 
     #[test]
     fn resolved_network_configs_preserve_session_identity() {

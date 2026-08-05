@@ -50,7 +50,7 @@ use foundry_evm::{
     },
     traces::{backtrace::BacktraceBuilder, identifier::TraceIdentifiers, prune_trace_depth},
 };
-use foundry_evm_networks::ResolvedNetworkProfile;
+use foundry_evm_networks::EvmFamily;
 use rand::Rng;
 use regex::Regex;
 use std::{
@@ -68,23 +68,6 @@ use crate::{result::TestKind, traces::render_trace_arena_inner};
 pub use filter::FilterArgs;
 use quick_junit::{NonSuccessKind, Report, TestCase, TestCaseStatus, TestSuite};
 use summary::{TestSummaryReport, format_invariant_metrics_table};
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum NetworkDispatchKind {
-    Tempo,
-    Optimism,
-    Ethereum,
-}
-
-const fn network_dispatch_kind(profile: ResolvedNetworkProfile) -> NetworkDispatchKind {
-    if profile.is_tempo() {
-        NetworkDispatchKind::Tempo
-    } else if profile.is_optimism() {
-        NetworkDispatchKind::Optimism
-    } else {
-        NetworkDispatchKind::Ethereum
-    }
-}
 
 // Loads project's figment and merges the build cli arguments into it
 foundry_config::merge_impl_figment_convert!(TestArgs, build, evm);
@@ -365,13 +348,13 @@ impl TestArgs {
             .resolve_evm_opts_async(evm_opts.clone(), NetworkIntent::new().with_fork_identity())
             .await?;
 
-        // Dispatch based on network type.
-        let (libraries, mut outcome) = match network_dispatch_kind(resolved.network_profile()) {
-            NetworkDispatchKind::Tempo => {
-                self.build_and_run_tests::<TempoEvmNetwork>(
-                    config.clone(),
-                    evm_opts.clone(),
-                    resolved.clone(),
+        // Dispatch based on the resolved EVM family.
+        let (libraries, mut outcome) = match resolved.network_profile().evm_family() {
+            EvmFamily::Ethereum => {
+                self.build_and_run_tests::<EthEvmNetwork>(
+                    config,
+                    evm_opts,
+                    resolved,
                     output,
                     filter,
                     coverage,
@@ -380,7 +363,7 @@ impl TestArgs {
                 )
                 .await?
             }
-            NetworkDispatchKind::Optimism => {
+            EvmFamily::Optimism => {
                 self.build_and_run_tests::<OpEvmNetwork>(
                     config.clone(),
                     evm_opts.clone(),
@@ -393,11 +376,11 @@ impl TestArgs {
                 )
                 .await?
             }
-            NetworkDispatchKind::Ethereum => {
-                self.build_and_run_tests::<EthEvmNetwork>(
-                    config,
-                    evm_opts,
-                    resolved,
+            EvmFamily::Tempo => {
+                self.build_and_run_tests::<TempoEvmNetwork>(
+                    config.clone(),
+                    evm_opts.clone(),
+                    resolved.clone(),
                     output,
                     filter,
                     coverage,
@@ -1132,28 +1115,6 @@ fn junit_xml_report(results: &BTreeMap<String, SuiteResult>, verbosity: u8) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
-    use foundry_evm_networks::NetworkConfigs;
-
-    #[test]
-    fn forge_dispatch_uses_the_resolved_network_profile() {
-        assert_eq!(
-            network_dispatch_kind(NetworkConfigs::default().resolve()),
-            NetworkDispatchKind::Ethereum
-        );
-        assert_eq!(
-            network_dispatch_kind(NetworkConfigs::with_tempo().resolve()),
-            NetworkDispatchKind::Tempo
-        );
-        assert_eq!(
-            network_dispatch_kind(NetworkConfigs::with_optimism().resolve()),
-            NetworkDispatchKind::Optimism
-        );
-        #[cfg(feature = "hashkey")]
-        assert_eq!(
-            network_dispatch_kind(NetworkConfigs::with_hashkey().resolve()),
-            NetworkDispatchKind::Optimism
-        );
-    }
 
     #[test]
     fn watch_parse() {
