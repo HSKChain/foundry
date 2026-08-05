@@ -21,23 +21,23 @@ _Avoid_: Custom mode, special feature
 _Avoid_: Plain Optimism, Ethereum with B20
 
 **HashKey build capability**:
-在标准 `forge`、`cast`、`anvil`、`chisel` 二进制中编译 HashKey profile 支持的内部 Cargo feature `hashkey`；该 feature 依赖 `optimism` 并隔离 B20 dependency graph。HSKChain 官方构建默认启用它，但 B20 runtime 仍只由显式 `--network hashkey` / `network = "hashkey"` 激活；未编译该 feature 的构建不暴露 HashKey profile。
-_Avoid_: Renamed HashKey binaries, runtime activation by build alone
+在 release archive 内的标准 `forge`、`cast`、`anvil`、`chisel` 二进制中编译 HashKey profile 支持的内部 Cargo feature `hashkey`；`hsk-foundryup` 只在安装层生成 `hsk-forge`、`hsk-cast`、`hsk-anvil`、`hsk-chisel` wrapper，不修改 Cargo `[[bin]]` 或 archive member 名。该 feature 依赖 `optimism` 并隔离 B20 dependency graph。HSKChain 官方构建默认启用它，但 B20 runtime 仍只由显式 `--network hashkey` / `network = "hashkey"` 激活；未编译该 feature 的构建不暴露 HashKey profile。
+_Avoid_: Cargo-level renamed binaries, runtime activation by build alone
 
 **HashKey profile selector**:
 首版唯一用户配置 surface：具体命令的 `--network hashkey`，或 `foundry.toml` 的 `network = "hashkey"`；CLI 覆盖配置文件。B20 activation time/admin、feature seed、singleton marker、binding revision 均由版本化 profile 拥有，不提供独立 TOML、环境变量或 CLI override。
 _Avoid_: User-assembled B20 config, selectable binding revision
 
 **HashKey release identity**:
-包含标准四个二进制与 `hashkey` build capability 的 HSKChain release tag，例如 `v1.7.2-hsk.1`。Release artifact 与 `--locked` source build 使用同一 `Cargo.lock`，并记录 Foundry、B20 semantic/binding、Tempo compatibility、Reth compatibility 的精确 revisions；首版不提供独立 foundryup fork。
+包含标准四个 archive binary、`hashkey` build capability 与独立 `hsk-foundryup` installer 的 HSKChain release tag，例如 `v1.7.2-hsk.1`。Release artifact 与 `--locked` source build 使用同一 `Cargo.lock`，并记录 Foundry、B20 semantic/binding、Tempo compatibility、Reth compatibility 的精确 revisions；installer 从 `HSKChain/foundry` 下载 archive，并以 `hsk-*` wrapper 与 stock Foundry 并存。
 _Avoid_: Unversioned custom binary, moving dependency builds
 
 **HashKey documentation contract**:
-随 profile 实现共同交付的 README quick start、Foundry Book config reference、B20 local simulation guide 与 release revision mapping。文档必须覆盖标准命令、development admin/feature defaults、Forge prank 与 Anvil impersonation、marker/snapshot/cheatcode 边界，并明确 local defaults 非生产参数、RPC fork 不 seed；自动生成的 CLI reference 不手工修改。
+随 profile 实现共同交付的 README quick start、Foundry Book config reference、B20 local simulation guide 与 release revision mapping。文档必须覆盖 `hsk-*` namespaced commands、development admin/feature defaults、Forge prank 与 Anvil impersonation、marker/snapshot/cheatcode 边界，并明确 local defaults 非生产参数、RPC fork 不 seed；自动生成的 CLI reference 不手工修改。
 _Avoid_: Usage-only documentation, unpublished production parameters
 
 **HashKey supported delivery scope**:
-首版正式兼容性声明只覆盖 Solidity caller compilation、standalone Forge/Anvil/Chisel execution，以及 Cast 连接由 `anvil --network hashkey` 启动的本地节点。RPC fork、远端 call/replay 与 broadcast 不声明 HashKey production/history fidelity，但仍必须 no-seed；profile 只承诺 pinned Beryl semantic baseline，不承诺 Cobalt 或未来 revision。
+首版正式兼容性声明只覆盖 Solidity caller compilation、standalone Forge/Anvil/Chisel execution，以及 Cast 连接由 `hsk-anvil --network hashkey` 启动的本地节点。RPC fork、远端 call/replay 与 broadcast 不声明 HashKey production/history fidelity，但仍必须 no-seed；profile 只承诺 pinned Beryl semantic baseline，不承诺 Cobalt 或未来 revision。
 _Avoid_: Production chain support, historical fork fidelity
 
 **HashKey release evidence**:
@@ -80,7 +80,7 @@ _Avoid_: Protecting the entire `0xb2...` namespace, blocking state inspection
 _Avoid_: B20-specific snapshot store, configuration snapshot
 
 **B20 precompile inventory**:
-通过现有 Anvil `eth_config.current.precompiles` 暴露的、当前 execution context 中可枚举的固定 B20 singleton 名称与地址。动态 `0xb2...` lookup domain 不可穷举，不进入静态 inventory；本地 B20 支持不新增 `cast precompiles` 命令。
+通过现有 Anvil `eth_config.current.precompiles` 暴露的、当前 execution context 中可枚举的固定 B20 singleton 名称与地址。动态 `0xb2...` lookup domain 不可穷举，不进入静态 inventory；本地 B20 支持不新增 `hsk-cast precompiles` 命令。
 _Avoid_: Dynamic token registry, execution prerequisite
 
 **B20 trace identity**:

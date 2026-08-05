@@ -23,14 +23,15 @@ Not guaranteed:
 
 ## Install and select the profile
 
-HSKChain releases use the ordinary `forge`, `cast`, `anvil`, and `chisel` names and an identifiable
-tag such as `v1.7.1-hsk-b20`. Installation and locked source-build commands are in the
+HSKChain release archives retain the ordinary Foundry binary names. `hsk-foundryup` installs
+namespaced `hsk-forge`, `hsk-cast`, `hsk-anvil`, and `hsk-chisel` wrappers without replacing a
+stock Foundry installation. Installation and source-build commands are in the
 [README](../README.md#hashkey-b20-local-profile).
 
 Select HashKey for one command:
 
 ```sh
-forge test --network hashkey
+hsk-forge test --network hashkey
 ```
 
 Or select it for the project:
@@ -91,7 +92,7 @@ contract B20Status {
 Run tests with:
 
 ```sh
-forge test --network hashkey -vvvv
+hsk-forge test --network hashkey -vvvv
 ```
 
 The development activation admin is useful for lifecycle tests. Use `vm.prank` rather than changing
@@ -115,14 +116,14 @@ uninitialized address that merely has the B20-shaped prefix is not protected.
 Start a fresh standalone node:
 
 ```sh
-anvil --network hashkey
+hsk-anvil --network hashkey
 ```
 
 Inspect the local activation state:
 
 ```sh
-ASSET_FEATURE=$(cast keccak "base.b20_asset")
-cast call \
+ASSET_FEATURE=$(hsk-cast keccak "base.b20_asset")
+hsk-cast call \
   --rpc-url http://127.0.0.1:8545 \
   0x8453000000000000000000000000000000000001 \
   "isActivated(bytes32)(bool)" "$ASSET_FEATURE"
@@ -134,20 +135,20 @@ To test admin-only operations, impersonate the development admin on the local no
 DEV_ADMIN=0xCB00000000000000000000000000000000000000
 RPC=http://127.0.0.1:8545
 
-cast rpc --rpc-url "$RPC" anvil_impersonateAccount "$DEV_ADMIN"
-cast send \
+hsk-cast rpc --rpc-url "$RPC" anvil_impersonateAccount "$DEV_ADMIN"
+hsk-cast send \
   --rpc-url "$RPC" \
   --unlocked --from "$DEV_ADMIN" \
   0x8453000000000000000000000000000000000001 \
   "deactivate(bytes32)" "$ASSET_FEATURE"
-cast rpc --rpc-url "$RPC" anvil_stopImpersonatingAccount "$DEV_ADMIN"
+hsk-cast rpc --rpc-url "$RPC" anvil_stopImpersonatingAccount "$DEV_ADMIN"
 ```
 
-RPC-backed `cast call` and `cast send` use the Anvil node's execution profile. For local replay and
+RPC-backed `hsk-cast call` and `hsk-cast send` use the Anvil node's execution profile. For local replay and
 debug execution inside Cast itself, select the profile explicitly:
 
 ```sh
-cast run --network hashkey --rpc-url "$RPC" TRANSACTION_HASH
+hsk-cast run --network hashkey --rpc-url "$RPC" TRANSACTION_HASH
 ```
 
 Anvil's normal `evm_snapshot` and `evm_revert` operations include B20 code and storage. Reverting a
@@ -162,7 +163,7 @@ baseline and does not inject the deterministic local markers, feature slots, or 
 Start a HashKey-aware REPL:
 
 ```sh
-chisel --network hashkey --offline -vvvv
+hsk-chisel --network hashkey --offline -vvvv
 ```
 
 Define the same Solidity interfaces used by a project, then call the Factory or registries normally.

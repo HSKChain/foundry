@@ -45,39 +45,34 @@ To verify a downloaded release archive or container image, see [Verifying Releas
 
 ### HashKey B20 local profile
 
-The HSKChain build keeps the standard `forge`, `cast`, `anvil`, and `chisel` binary names and is
-identified by an `-hsk-b20` release tag. For example, install the Linux AMD64 archive for
-`v1.7.1-hsk-b20` with the GitHub CLI:
+HSKChain release archives keep Foundry's standard `forge`, `cast`, `anvil`, and `chisel` binary
+names. The HSKChain installer exposes them through namespaced wrappers so they can coexist with a
+stock Foundry installation:
 
 ```sh
-HSK_TAG=v1.7.1-hsk-b20
-gh release download "$HSK_TAG" \
-  --repo mowind/foundry \
-  --pattern "foundry_${HSK_TAG}_linux_amd64.tar.gz"
-tar -xzf "foundry_${HSK_TAG}_linux_amd64.tar.gz"
-mkdir -p "$HOME/.local/bin"
-install forge cast anvil chisel "$HOME/.local/bin"
+curl -L https://raw.githubusercontent.com/HSKChain/foundry/HEAD/foundryup/install | bash
+hsk-foundryup --install v1.7.1-hsk-b20
 ```
 
-The same release can be built reproducibly from its tag:
+This installs `hsk-forge`, `hsk-cast`, `hsk-anvil`, and `hsk-chisel` without replacing
+`foundryup` or the stock commands. The same release can be built from its tag and registered under
+the namespaced commands:
 
 ```sh
-git clone https://github.com/mowind/foundry.git foundry-hsk
+git clone https://github.com/HSKChain/foundry.git foundry-hsk
 cd foundry-hsk
 git checkout v1.7.1-hsk-b20
-cargo build --locked --profile dist \
-  -p forge -p cast -p anvil -p chisel \
-  --features hashkey
+hsk-foundryup --path "$PWD"
 ```
 
 Select the standalone local profile explicitly:
 
 ```sh
-anvil --network hashkey
-forge test --network hashkey
-cast call --rpc-url http://127.0.0.1:8545 ADDRESS "function()"
-cast run --network hashkey --rpc-url http://127.0.0.1:8545 TRANSACTION_HASH
-chisel --network hashkey
+hsk-anvil --network hashkey
+hsk-forge test --network hashkey
+hsk-cast call --rpc-url http://127.0.0.1:8545 ADDRESS "function()"
+hsk-cast run --network hashkey --rpc-url http://127.0.0.1:8545 TRANSACTION_HASH
+hsk-chisel --network hashkey
 ```
 
 Or make it the project default in `foundry.toml`:

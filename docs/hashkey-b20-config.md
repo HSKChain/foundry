@@ -14,6 +14,9 @@ cargo build --locked \
   --features hashkey
 ```
 
+Cargo keeps the standard target names. To build the checkout with the feature and install the
+namespaced commands, run `hsk-foundryup --path "$PWD"` from the repository root.
+
 A binary built without this feature rejects `hashkey` as an unknown `--network` value. Enabling the
 feature only adds the capability; it does not activate B20 unless the runtime selector is also set.
 
@@ -26,15 +29,15 @@ feature only adds the capability; it does not activate B20 unless the runtime se
 Command-line form:
 
 ```sh
-forge test --network hashkey
-anvil --network hashkey
-cast run --network hashkey --rpc-url http://127.0.0.1:8545 TRANSACTION_HASH
-chisel --network hashkey
+hsk-forge test --network hashkey
+hsk-anvil --network hashkey
+hsk-cast run --network hashkey --rpc-url http://127.0.0.1:8545 TRANSACTION_HASH
+hsk-chisel --network hashkey
 ```
 
-`cast call` and `cast send` execute through the connected RPC node and therefore do not take the
+`hsk-cast call` and `hsk-cast send` execute through the connected RPC node and therefore do not take the
 selector. Point them at a HashKey Anvil RPC. Use `--network hashkey` for Cast commands such as
-`cast run` that replay or execute transactions in Cast's local EVM.
+`hsk-cast run` that replay or execute transactions in Cast's local EVM.
 
 Project configuration:
 
