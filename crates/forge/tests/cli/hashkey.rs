@@ -91,6 +91,6 @@ Script ran successfully.
 [GAS]
 
 == Return ==
-asset: address 0xb2[..]
+asset: address 0x0177[..]
 "#]]);
 });

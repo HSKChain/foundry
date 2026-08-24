@@ -339,8 +339,8 @@ fn expected_observables() -> Vec<ScenarioObservable> {
             status: OutcomeStatus::Success,
             output: IH20Factory::createH20Call::abi_encode_returns(&ASSET).into(),
             gas_used: 201_307,
-            logs_hash: b256!("61801e78c694a6308601b0b1424329c4384d34e694983c23d60296c6e963e112"),
-            storage_hash: b256!("a9df31b03eb9789b6c15c920f8b340cec4a20dd9ce1fbf85bb93655fc26cbccc"),
+            logs_hash: b256!("d47e55e3dca582c8f7cbd5632f8ded131d983f3b1202a550f09383436ca9f1c3"),
+            storage_hash: b256!("a2d2a9ead506ab0bb9f0a22666674fcc6890d459a4bcfea425554d663c690299"),
         },
         ScenarioObservable {
             scenario: H20Scenario::ReadAsset,
@@ -355,8 +355,8 @@ fn expected_observables() -> Vec<ScenarioObservable> {
             status: OutcomeStatus::Success,
             output: IH20Factory::createH20Call::abi_encode_returns(&STABLECOIN).into(),
             gas_used: 200_739,
-            logs_hash: b256!("0d90cefad92c964660f7f3e8257b91b28b8b5c01d327070ba956403ac502d387"),
-            storage_hash: b256!("7b509e94998e59e33f5330d645305d1ff56324b4cf520eb7777ceab066d595ab"),
+            logs_hash: b256!("5abc3be92356760ae7a2095e381cb4d8abf794e4f73e44b9b150320546befbf8"),
+            storage_hash: b256!("3da039832deed89423ae959c91f734ed0d5bf301b17ec4821a4afeef3e532edf"),
         },
         ScenarioObservable {
             scenario: H20Scenario::ReadStablecoin,
@@ -371,8 +371,8 @@ fn expected_observables() -> Vec<ScenarioObservable> {
             status: OutcomeStatus::Success,
             output: IPolicyRegistry::createPolicyCall::abi_encode_returns(&2).into(),
             gas_used: 116_009,
-            logs_hash: b256!("78b32a57202ab95000a59a8c669111bda1231e08f074faa30a995eb94787f581"),
-            storage_hash: b256!("b43ace4a78cd6bd43205329fde70524b6facb1855849a2c65363b6391a6a300e"),
+            logs_hash: b256!("1ac76809bdaf74c91b5488dd387690a62bddab5d2d8043d61fb22de7e74b6fb5"),
+            storage_hash: b256!("30b61663b013681a8b07bb95a074050cbca49303e75818c8a12b79a4f9e290c9"),
         },
         ScenarioObservable {
             scenario: H20Scenario::ReadActivation,

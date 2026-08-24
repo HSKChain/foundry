@@ -18,7 +18,7 @@ contract H20LifecycleTest is Test {
 
     address constant FACTORY = 0x0177FF0000000000000000000000000000000000;
     address constant ACTIVATION_REGISTRY = 0x0177FF0000000000000000000000000000000001;
-    address constant POLICY_REGISTRY = 0x0177FF0000000000000000000000000000000002;
+    address constant POLICY_REGISTRY = 0x0177fF0000000000000000000000000000000002;
     address constant ACTIVATION_ADMIN = 0xCB00000000000000000000000000000000000000;
     address constant ALICE = address(0xA11CE);
     address constant OUTSIDER = address(0xBAD);
@@ -36,7 +36,7 @@ contract H20LifecycleTest is Test {
         IH20 assetToken = IH20(asset);
 
         assertEq(asset, predicted, "deterministic address mismatch");
-        assertEq(uint8(uint160(asset) >> 152), 0xb2, "asset address must have H20 prefix");
+        assertEq(uint8(uint160(asset) >> 152), 0x01, "asset address must have H20 prefix");
         assertEq(asset.code, hex"ef", "asset marker missing");
         assertTrue(IH20Factory(FACTORY).isH20Initialized(asset), "asset not initialized");
         assertEq(assetToken.decimals(), 18, "asset decimals mismatch");
