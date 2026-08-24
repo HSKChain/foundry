@@ -1,7 +1,7 @@
-# HashKey B20 local simulation
+# HashKey H20 local simulation
 
 The HSKChain Foundry release provides a deterministic, opt-in environment for compiling Solidity
-callers and exercising Beryl B20 v1 native precompiles with Forge, Anvil, Cast, and Chisel. It is a
+callers and exercising Beryl H20 v1 native precompiles with Forge, Anvil, Cast, and Chisel. It is a
 standalone local-development profile, not a model of current or historical HashKey production state.
 
 ## Support boundary
@@ -11,8 +11,8 @@ Supported:
 - Fresh standalone Forge execution selected with `--network hashkey` or `network = "hashkey"`.
 - Fresh standalone HashKey Anvil nodes and Cast clients connected to those nodes.
 - Chisel sessions using the same profile.
-- Deterministic B20 Factory, Asset, Stablecoin, ActivationRegistry, and PolicyRegistry behavior.
-- Ordinary Foundry and Anvil snapshot/revert behavior for B20 marker code and storage.
+- Deterministic H20 Factory, Asset, Stablecoin, ActivationRegistry, and PolicyRegistry behavior.
+- Ordinary Foundry and Anvil snapshot/revert behavior for H20 marker code and storage.
 
 Not guaranteed:
 
@@ -26,7 +26,7 @@ Not guaranteed:
 HSKChain release archives retain the ordinary Foundry binary names. `hsk-foundryup` installs
 namespaced `hsk-forge`, `hsk-cast`, `hsk-anvil`, and `hsk-chisel` wrappers without replacing a
 stock Foundry installation. Installation and source-build commands are in the
-[README](../README.md#hashkey-b20-local-profile).
+[README](../README.md#hashkey-h20-local-profile).
 
 Select HashKey for one command:
 
@@ -42,7 +42,7 @@ network = "hashkey"
 ```
 
 An explicit CLI selector takes precedence over the project setting. The binary must also have been
-built with the `hashkey` Cargo feature. See the [configuration reference](./hashkey-b20-config.md).
+built with the `hashkey` Cargo feature. See the [configuration reference](./hashkey-h20-config.md).
 
 ## Deterministic development state
 
@@ -50,16 +50,16 @@ Fresh standalone execution uses the following local fixture:
 
 | Item | Local value |
 | --- | --- |
-| B20 activation time | `0` |
+| H20 activation time | `0` |
 | Development activation admin | `0xCB00000000000000000000000000000000000000` |
-| B20 Factory | `0xB20F000000000000000000000000000000000000` |
-| ActivationRegistry | `0x8453000000000000000000000000000000000001` |
-| PolicyRegistry | `0x8453000000000000000000000000000000000002` |
-| Initially active features | `B20Asset`, `B20Stablecoin`, `PolicyRegistry` |
+| H20 Factory | `0x0177FF0000000000000000000000000000000000` |
+| ActivationRegistry | `0x0177FF0000000000000000000000000000000001` |
+| PolicyRegistry | `0x0177FF0000000000000000000000000000000002` |
+| Initially active features | `H20Asset`, `H20Stablecoin`, `PolicyRegistry` |
 | Singleton marker bytecode | `0xef` |
 
-The feature identifiers are `keccak256("base.b20_asset")`,
-`keccak256("base.b20_stablecoin")`, and `keccak256("base.policy_registry")`.
+The feature identifiers are `keccak256("hsk.h20_asset")`,
+`keccak256("hsk.h20_stablecoin")`, and `keccak256("base.policy_registry")`.
 
 The three singleton markers and activation slots are initialized once at the standalone backend or
 genesis boundary. They are not replayed whenever a new EVM is created. Dynamic Asset and Stablecoin
@@ -68,8 +68,8 @@ successfully creates them.
 
 ## Solidity callers and Forge
 
-B20 is implemented as native Rust/revm precompiles. Solidity projects compile interfaces and callers,
-not the B20 implementation itself. A minimal activation query is:
+H20 is implemented as native Rust/revm precompiles. Solidity projects compile interfaces and callers,
+not the H20 implementation itself. A minimal activation query is:
 
 ```solidity
 // SPDX-License-Identifier: MIT
@@ -79,12 +79,12 @@ interface IActivationRegistry {
     function isActivated(bytes32 feature) external view returns (bool);
 }
 
-contract B20Status {
+contract H20Status {
     IActivationRegistry constant REGISTRY =
-        IActivationRegistry(0x8453000000000000000000000000000000000001);
+        IActivationRegistry(0x0177FF0000000000000000000000000000000001);
 
     function assetActive() external view returns (bool) {
-        return REGISTRY.isActivated(keccak256("base.b20_asset"));
+        return REGISTRY.isActivated(keccak256("hsk.h20_asset"));
     }
 }
 ```
@@ -100,16 +100,16 @@ the deterministic fixture:
 
 ```solidity
 address constant DEV_ADMIN = 0xCB00000000000000000000000000000000000000;
-bytes32 constant ASSET_FEATURE = keccak256("base.b20_asset");
+bytes32 constant ASSET_FEATURE = keccak256("hsk.h20_asset");
 
 vm.prank(DEV_ADMIN);
-IActivationRegistry(0x8453000000000000000000000000000000000001)
+IActivationRegistry(0x0177FF0000000000000000000000000000000001)
     .deactivate(ASSET_FEATURE);
 ```
 
 `vm.load` remains available for read-only inspection. Mutation cheatcodes such as `vm.store` and
-`vm.etch` reject the three singleton accounts and initialized dynamic B20 token addresses. An
-uninitialized address that merely has the B20-shaped prefix is not protected.
+`vm.etch` reject the three singleton accounts and initialized dynamic H20 token addresses. An
+uninitialized address that merely has the H20-shaped prefix is not protected.
 
 ## Anvil and Cast
 
@@ -122,10 +122,10 @@ hsk-anvil --network hashkey
 Inspect the local activation state:
 
 ```sh
-ASSET_FEATURE=$(hsk-cast keccak "base.b20_asset")
+ASSET_FEATURE=$(hsk-cast keccak "hsk.h20_asset")
 hsk-cast call \
   --rpc-url http://127.0.0.1:8545 \
-  0x8453000000000000000000000000000000000001 \
+  0x0177FF0000000000000000000000000000000001 \
   "isActivated(bytes32)(bool)" "$ASSET_FEATURE"
 ```
 
@@ -139,7 +139,7 @@ hsk-cast rpc --rpc-url "$RPC" anvil_impersonateAccount "$DEV_ADMIN"
 hsk-cast send \
   --rpc-url "$RPC" \
   --unlocked --from "$DEV_ADMIN" \
-  0x8453000000000000000000000000000000000001 \
+  0x0177FF0000000000000000000000000000000001 \
   "deactivate(bytes32)" "$ASSET_FEATURE"
 hsk-cast rpc --rpc-url "$RPC" anvil_stopImpersonatingAccount "$DEV_ADMIN"
 ```
@@ -151,7 +151,7 @@ debug execution inside Cast itself, select the profile explicitly:
 hsk-cast run --network hashkey --rpc-url "$RPC" TRANSACTION_HASH
 ```
 
-Anvil's normal `evm_snapshot` and `evm_revert` operations include B20 code and storage. Reverting a
+Anvil's normal `evm_snapshot` and `evm_revert` operations include H20 code and storage. Reverting a
 post-genesis dynamic token creation removes its marker and token storage, while the singleton marker
 and initial activation baseline remain present.
 
@@ -168,15 +168,15 @@ hsk-chisel --network hashkey --offline -vvvv
 
 Define the same Solidity interfaces used by a project, then call the Factory or registries normally.
 The session keeps the resolved HashKey profile and state across REPL rebuilds. `-vvvv` shows stable
-labels such as `B20Factory`, `B20Asset`, and `B20Stablecoin` in traces.
+labels such as `H20Factory`, `H20Asset`, and `H20Stablecoin` in traces.
 
 ## Traces and decoding
 
-Forge, Anvil debug RPCs, Cast replay/debug commands, and Chisel decode B20 calls only when all of the
+Forge, Anvil debug RPCs, Cast replay/debug commands, and Chisel decode H20 calls only when all of the
 following match:
 
 - The resolved profile is HashKey.
-- B20 is active at the EVM creation timestamp.
+- H20 is active at the EVM creation timestamp.
 - The called address is the relevant singleton or an initialized canonical dynamic token.
 
 Malformed or incompatible calldata remains raw instead of being assigned a misleading global

@@ -2,11 +2,11 @@
 //!
 //! Foundry EVM network configuration.
 
-#[cfg(feature = "hashkey")]
-use crate::b20_addresses::{B20_ACTIVATION_REGISTRY, B20_FACTORY, B20_POLICY_REGISTRY};
 use crate::celo::transfer::{
     CELO_TRANSFER_ADDRESS, CELO_TRANSFER_LABEL, PRECOMPILE_ID_CELO_TRANSFER,
 };
+#[cfg(feature = "hashkey")]
+use crate::h20_addresses::{H20_ACTIVATION_REGISTRY, H20_FACTORY, H20_POLICY_REGISTRY};
 use alloy_chains::{
     Chain, NamedChain,
     NamedChain::{Chiado, Gnosis, Moonbase, Moonbeam, MoonbeamDev, Moonriver, Rsk, RskTestnet},
@@ -22,10 +22,10 @@ use alloy_primitives::{Address, B256, ChainId, map::AddressHashMap};
 use clap::Parser;
 use foundry_evm_hardforks::{FoundryHardfork, TempoHardfork};
 #[cfg(feature = "hashkey")]
-use hsk_b20_config::B20Config;
+use hsk_h20_config::H20Config;
 #[cfg(feature = "hashkey")]
-use hsk_b20_precompiles::{
-    ActivationRegistry, B20Factory, B20Spec, B20Variant, BerylLookup, NoopPrecompileCallObserver,
+use hsk_h20_precompiles::{
+    ActivationRegistry, BerylLookup, H20Factory, H20Spec, H20Variant, NoopPrecompileCallObserver,
     PolicyRegistryPrecompile,
 };
 use revm::precompile::PrecompileId;
@@ -44,28 +44,28 @@ pub mod celo;
 mod local_genesis;
 pub use local_genesis::{LocalGenesisState, ProfileGenesisTarget};
 
-/// HashKey B20 standalone local development activation admin.
+/// HashKey H20 standalone local development activation admin.
 ///
 /// This deterministic non-zero address is used only for standalone local simulation. It is not a
 /// production HashKey parameter.
 #[cfg(feature = "hashkey")]
-pub const HSK_B20_LOCAL_ADMIN: Address =
+pub const HSK_H20_LOCAL_ADMIN: Address =
     alloy_primitives::address!("CB00000000000000000000000000000000000000");
 
-/// B20 singleton addresses.
+/// H20 singleton addresses.
 #[cfg(feature = "hashkey")]
-mod b20_addresses {
+mod h20_addresses {
     use alloy_primitives::Address;
 
-    /// `B20Factory` singleton precompile address.
-    pub const B20_FACTORY: Address =
-        alloy_primitives::address!("B20F000000000000000000000000000000000000");
+    /// `H20Factory` singleton precompile address.
+    pub const H20_FACTORY: Address =
+        alloy_primitives::address!("0177FF0000000000000000000000000000000000");
     /// `ActivationRegistry` singleton precompile address.
-    pub const B20_ACTIVATION_REGISTRY: Address =
-        alloy_primitives::address!("8453000000000000000000000000000000000001");
+    pub const H20_ACTIVATION_REGISTRY: Address =
+        alloy_primitives::address!("0177FF0000000000000000000000000000000001");
     /// `PolicyRegistry` singleton precompile address.
-    pub const B20_POLICY_REGISTRY: Address =
-        alloy_primitives::address!("8453000000000000000000000000000000000002");
+    pub const H20_POLICY_REGISTRY: Address =
+        alloy_primitives::address!("0177FF0000000000000000000000000000000002");
 }
 
 const TEMPO_PRECOMPILES: &[(&str, Address)] = &[
@@ -109,13 +109,13 @@ fn active_tempo_precompiles(
 
 #[cfg(feature = "hashkey")]
 #[allow(dead_code)]
-fn hashkey_b20_type_identity_probe(
+fn hashkey_h20_type_identity_probe(
     precompiles: &mut PrecompilesMap,
     activation_admin: Option<Address>,
 ) {
-    let _config = B20Config::DISABLED;
-    B20Factory::install_with_observer(precompiles, B20Spec::Beryl, NoopPrecompileCallObserver);
-    PolicyRegistryPrecompile::install(precompiles, B20Spec::Beryl);
+    let _config = H20Config::DISABLED;
+    H20Factory::install_with_observer(precompiles, H20Spec::Beryl, NoopPrecompileCallObserver);
+    PolicyRegistryPrecompile::install(precompiles, H20Spec::Beryl);
     ActivationRegistry::install(precompiles, activation_admin);
     BerylLookup::install(precompiles);
 }
@@ -205,21 +205,21 @@ impl NetworkExecutionContext {
 /// Canonical network-owned contract identity used by trace projections.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NetworkTraceIdentity {
-    /// HashKey B20 factory singleton.
+    /// HashKey H20 factory singleton.
     #[cfg(feature = "hashkey")]
-    B20Factory,
-    /// HashKey B20 activation registry singleton.
+    H20Factory,
+    /// HashKey H20 activation registry singleton.
     #[cfg(feature = "hashkey")]
-    B20ActivationRegistry,
-    /// HashKey B20 policy registry singleton.
+    H20ActivationRegistry,
+    /// HashKey H20 policy registry singleton.
     #[cfg(feature = "hashkey")]
-    B20PolicyRegistry,
-    /// HashKey B20 Asset dynamic token.
+    H20PolicyRegistry,
+    /// HashKey H20 Asset dynamic token.
     #[cfg(feature = "hashkey")]
-    B20Asset,
-    /// HashKey B20 Stablecoin dynamic token.
+    H20Asset,
+    /// HashKey H20 Stablecoin dynamic token.
     #[cfg(feature = "hashkey")]
-    B20Stablecoin,
+    H20Stablecoin,
 }
 
 impl NetworkTraceIdentity {
@@ -227,15 +227,15 @@ impl NetworkTraceIdentity {
     pub const fn label(self) -> &'static str {
         match self {
             #[cfg(feature = "hashkey")]
-            Self::B20Factory => "B20Factory",
+            Self::H20Factory => "H20Factory",
             #[cfg(feature = "hashkey")]
-            Self::B20ActivationRegistry => "B20ActivationRegistry",
+            Self::H20ActivationRegistry => "H20ActivationRegistry",
             #[cfg(feature = "hashkey")]
-            Self::B20PolicyRegistry => "B20PolicyRegistry",
+            Self::H20PolicyRegistry => "H20PolicyRegistry",
             #[cfg(feature = "hashkey")]
-            Self::B20Asset => "B20Asset",
+            Self::H20Asset => "H20Asset",
             #[cfg(feature = "hashkey")]
-            Self::B20Stablecoin => "B20Stablecoin",
+            Self::H20Stablecoin => "H20Stablecoin",
         }
     }
 
@@ -244,10 +244,10 @@ impl NetworkTraceIdentity {
         #[cfg(feature = "hashkey")]
         {
             match self {
-                Self::B20Factory => Some(B20_FACTORY),
-                Self::B20ActivationRegistry => Some(B20_ACTIVATION_REGISTRY),
-                Self::B20PolicyRegistry => Some(B20_POLICY_REGISTRY),
-                Self::B20Asset | Self::B20Stablecoin => None,
+                Self::H20Factory => Some(H20_FACTORY),
+                Self::H20ActivationRegistry => Some(H20_ACTIVATION_REGISTRY),
+                Self::H20PolicyRegistry => Some(H20_POLICY_REGISTRY),
+                Self::H20Asset | Self::H20Stablecoin => None,
             }
         }
         #[cfg(not(feature = "hashkey"))]
@@ -259,9 +259,9 @@ impl NetworkTraceIdentity {
         #[cfg(feature = "hashkey")]
         {
             const IDENTITIES: &[NetworkTraceIdentity] = &[
-                NetworkTraceIdentity::B20Factory,
-                NetworkTraceIdentity::B20ActivationRegistry,
-                NetworkTraceIdentity::B20PolicyRegistry,
+                NetworkTraceIdentity::H20Factory,
+                NetworkTraceIdentity::H20ActivationRegistry,
+                NetworkTraceIdentity::H20PolicyRegistry,
             ];
             IDENTITIES
         }
@@ -339,9 +339,9 @@ pub struct ResolvedNetworkProfile {
     #[cfg(feature = "hashkey")]
     hashkey: bool,
     #[cfg(feature = "hashkey")]
-    b20_activation_time: Option<u64>,
+    h20_activation_time: Option<u64>,
     #[cfg(feature = "hashkey")]
-    b20_activation_admin: Option<Address>,
+    h20_activation_admin: Option<Address>,
 }
 
 impl ResolvedNetworkProfile {
@@ -374,22 +374,22 @@ impl ResolvedNetworkProfile {
         matches!(self.family, EvmFamily::Optimism)
     }
 
-    /// Returns whether the HashKey B20 extension is enabled.
+    /// Returns whether the HashKey H20 extension is enabled.
     #[cfg(feature = "hashkey")]
     pub const fn is_hashkey(self) -> bool {
         self.hashkey
     }
 
-    /// Returns the B20 consensus configuration for standalone local development.
+    /// Returns the H20 consensus configuration for standalone local development.
     #[cfg(feature = "hashkey")]
-    pub fn b20_config(self) -> B20Config {
-        B20Config::new(self.b20_activation_time, self.b20_activation_admin)
-            .expect("resolved HashKey B20 config is valid")
+    pub fn h20_config(self) -> H20Config {
+        H20Config::new(self.h20_activation_time, self.h20_activation_admin)
+            .expect("resolved HashKey H20 config is valid")
     }
 
     /// Resolves an address to a network-owned trace identity for one activation snapshot.
     ///
-    /// Dynamic B20 tokens are identified only from their canonical address variant. This does not
+    /// Dynamic H20 tokens are identified only from their canonical address variant. This does not
     /// read mutable token metadata or imply that an uninitialized structural address has code.
     pub fn trace_identity(
         self,
@@ -397,14 +397,14 @@ impl ResolvedNetworkProfile {
         context: NetworkExecutionContext,
     ) -> Option<NetworkTraceIdentity> {
         #[cfg(feature = "hashkey")]
-        if self.hashkey && self.b20_config().is_active_at(context.timestamp) {
+        if self.hashkey && self.h20_config().is_active_at(context.timestamp) {
             return match address {
-                B20_FACTORY => Some(NetworkTraceIdentity::B20Factory),
-                B20_ACTIVATION_REGISTRY => Some(NetworkTraceIdentity::B20ActivationRegistry),
-                B20_POLICY_REGISTRY => Some(NetworkTraceIdentity::B20PolicyRegistry),
-                address => match B20Variant::from_address(address) {
-                    Some(B20Variant::Asset) => Some(NetworkTraceIdentity::B20Asset),
-                    Some(B20Variant::Stablecoin) => Some(NetworkTraceIdentity::B20Stablecoin),
+                H20_FACTORY => Some(NetworkTraceIdentity::H20Factory),
+                H20_ACTIVATION_REGISTRY => Some(NetworkTraceIdentity::H20ActivationRegistry),
+                H20_POLICY_REGISTRY => Some(NetworkTraceIdentity::H20PolicyRegistry),
+                address => match H20Variant::from_address(address) {
+                    Some(H20Variant::Asset) => Some(NetworkTraceIdentity::H20Asset),
+                    Some(H20Variant::Stablecoin) => Some(NetworkTraceIdentity::H20Stablecoin),
                     None => None,
                 },
             };
@@ -413,21 +413,21 @@ impl ResolvedNetworkProfile {
         None
     }
 
-    /// Overrides the resolved B20 config for activation-boundary conformance tests.
+    /// Overrides the resolved H20 config for activation-boundary conformance tests.
     #[doc(hidden)]
     #[cfg(all(feature = "hashkey", any(test, feature = "test-utils")))]
-    pub const fn with_b20_config_for_test(mut self, config: B20Config) -> Self {
-        self.b20_activation_time = config.activation_time();
-        self.b20_activation_admin = config.activation_admin();
+    pub const fn with_h20_config_for_test(mut self, config: H20Config) -> Self {
+        self.h20_activation_time = config.activation_time();
+        self.h20_activation_admin = config.activation_admin();
         self
     }
 
-    /// Returns whether `address` is a fixed B20 singleton owned by this profile.
-    pub const fn is_b20_singleton(self, address: Address) -> bool {
+    /// Returns whether `address` is a fixed H20 singleton owned by this profile.
+    pub const fn is_h20_singleton(self, address: Address) -> bool {
         #[cfg(feature = "hashkey")]
         {
             self.is_hashkey()
-                && matches!(address, B20_FACTORY | B20_ACTIVATION_REGISTRY | B20_POLICY_REGISTRY)
+                && matches!(address, H20_FACTORY | H20_ACTIVATION_REGISTRY | H20_POLICY_REGISTRY)
         }
         #[cfg(not(feature = "hashkey"))]
         {
@@ -436,16 +436,16 @@ impl ResolvedNetworkProfile {
         }
     }
 
-    /// Returns whether mutation cheatcodes must preserve the native B20 state at `address`.
-    pub fn protects_b20_native_state(self, address: Address, code_hash: B256) -> bool {
-        if self.is_b20_singleton(address) {
+    /// Returns whether mutation cheatcodes must preserve the native H20 state at `address`.
+    pub fn protects_h20_native_state(self, address: Address, code_hash: B256) -> bool {
+        if self.is_h20_singleton(address) {
             return true;
         }
 
         #[cfg(feature = "hashkey")]
         {
             self.is_hashkey()
-                && B20Variant::from_address(address).is_some()
+                && H20Variant::from_address(address).is_some()
                 && code_hash == keccak256([0xef])
         }
         #[cfg(not(feature = "hashkey"))]
@@ -491,7 +491,7 @@ impl ResolvedNetworkProfile {
     ) -> Result<(), PrecompileCompositionError> {
         #[cfg(feature = "hashkey")]
         if self.hashkey {
-            self.inject_b20_precompiles(precompiles, _context)?;
+            self.inject_h20_precompiles(precompiles, _context)?;
         }
         self.inject_reusable_precompiles(precompiles);
         Ok(())
@@ -506,24 +506,24 @@ impl ResolvedNetworkProfile {
         }
     }
 
-    /// Installs B20 singletons and dynamic lookup when the activation snapshot is active.
+    /// Installs H20 singletons and dynamic lookup when the activation snapshot is active.
     #[cfg(feature = "hashkey")]
-    fn inject_b20_precompiles(
+    fn inject_h20_precompiles(
         self,
         precompiles: &mut PrecompilesMap,
         context: NetworkExecutionContext,
     ) -> Result<(), PrecompileCompositionError> {
-        let config = self.b20_config();
+        let config = self.h20_config();
         if !config.is_active_at(context.timestamp) {
             return Ok(());
         }
 
-        self.ensure_b20_singleton_free(precompiles, B20_FACTORY)?;
-        self.ensure_b20_singleton_free(precompiles, B20_ACTIVATION_REGISTRY)?;
-        self.ensure_b20_singleton_free(precompiles, B20_POLICY_REGISTRY)?;
+        self.ensure_h20_singleton_free(precompiles, H20_FACTORY)?;
+        self.ensure_h20_singleton_free(precompiles, H20_ACTIVATION_REGISTRY)?;
+        self.ensure_h20_singleton_free(precompiles, H20_POLICY_REGISTRY)?;
 
-        B20Factory::install_with_observer(precompiles, B20Spec::Beryl, NoopPrecompileCallObserver);
-        PolicyRegistryPrecompile::install(precompiles, B20Spec::Beryl);
+        H20Factory::install_with_observer(precompiles, H20Spec::Beryl, NoopPrecompileCallObserver);
+        PolicyRegistryPrecompile::install(precompiles, H20Spec::Beryl);
         ActivationRegistry::install(precompiles, config.activation_admin());
         precompiles.map_precompile_lookup(|address, previous| {
             BerylLookup::lookup(address)
@@ -534,7 +534,7 @@ impl ResolvedNetworkProfile {
     }
 
     #[cfg(feature = "hashkey")]
-    fn ensure_b20_singleton_free(
+    fn ensure_h20_singleton_free(
         self,
         precompiles: &PrecompilesMap,
         address: Address,
@@ -561,9 +561,9 @@ impl ResolvedNetworkProfile {
         }
         #[cfg(feature = "hashkey")]
         if self.hashkey {
-            labels.insert(B20_FACTORY, "B20Factory".to_string());
-            labels.insert(B20_ACTIVATION_REGISTRY, "B20ActivationRegistry".to_string());
-            labels.insert(B20_POLICY_REGISTRY, "B20PolicyRegistry".to_string());
+            labels.insert(H20_FACTORY, "H20Factory".to_string());
+            labels.insert(H20_ACTIVATION_REGISTRY, "H20ActivationRegistry".to_string());
+            labels.insert(H20_POLICY_REGISTRY, "H20PolicyRegistry".to_string());
         }
         if self.is_tempo() {
             labels.extend(
@@ -586,9 +586,9 @@ impl ResolvedNetworkProfile {
         }
         #[cfg(feature = "hashkey")]
         if self.hashkey {
-            precompiles.insert("B20Factory".to_string(), B20_FACTORY);
-            precompiles.insert("B20ActivationRegistry".to_string(), B20_ACTIVATION_REGISTRY);
-            precompiles.insert("B20PolicyRegistry".to_string(), B20_POLICY_REGISTRY);
+            precompiles.insert("H20Factory".to_string(), H20_FACTORY);
+            precompiles.insert("H20ActivationRegistry".to_string(), H20_ACTIVATION_REGISTRY);
+            precompiles.insert("H20PolicyRegistry".to_string(), H20_POLICY_REGISTRY);
         }
         if self.is_tempo() {
             precompiles.extend(
@@ -655,7 +655,7 @@ impl NetworkConfigs {
         Self { network: Some(NetworkVariant::Tempo), tempo: true, ..Default::default() }
     }
 
-    /// Selects the HashKey B20 network profile.
+    /// Selects the HashKey H20 network profile.
     #[cfg(feature = "hashkey")]
     pub fn with_hashkey() -> Self {
         Self { network: Some(NetworkVariant::HashKey), ..Default::default() }
@@ -697,9 +697,9 @@ impl NetworkConfigs {
             #[cfg(feature = "hashkey")]
             hashkey,
             #[cfg(feature = "hashkey")]
-            b20_activation_time: if hashkey { Some(0) } else { None },
+            h20_activation_time: if hashkey { Some(0) } else { None },
             #[cfg(feature = "hashkey")]
-            b20_activation_admin: if hashkey { Some(HSK_B20_LOCAL_ADMIN) } else { None },
+            h20_activation_admin: if hashkey { Some(HSK_H20_LOCAL_ADMIN) } else { None },
         }
     }
 
@@ -839,9 +839,9 @@ mod tests {
 
     #[cfg(feature = "hashkey")]
     #[test]
-    fn hashkey_b20_packages_share_precompiles_map_type() {
+    fn hashkey_h20_packages_share_precompiles_map_type() {
         let mut precompiles = PrecompilesMap::from_static(Precompiles::cancun());
-        hashkey_b20_type_identity_probe(&mut precompiles, None);
+        hashkey_h20_type_identity_probe(&mut precompiles, None);
     }
 
     #[test]
@@ -934,7 +934,7 @@ mod tests {
 
     #[cfg(feature = "hashkey")]
     #[test]
-    fn hashkey_selector_resolves_optimism_b20_profile() {
+    fn hashkey_selector_resolves_optimism_h20_profile() {
         let configs = NetworkConfigs::parse_from(["test", "--network", "hashkey"]);
         let profile = configs.resolve();
 
@@ -944,51 +944,51 @@ mod tests {
         assert!(profile.is_hashkey());
         assert_eq!(profile.state_plan(), NetworkStatePlan::None);
 
-        let b20_config = profile.b20_config();
-        assert_eq!(b20_config.activation_time(), Some(0));
-        assert_eq!(b20_config.activation_admin(), Some(HSK_B20_LOCAL_ADMIN));
+        let h20_config = profile.h20_config();
+        assert_eq!(h20_config.activation_time(), Some(0));
+        assert_eq!(h20_config.activation_admin(), Some(HSK_H20_LOCAL_ADMIN));
     }
 
     #[cfg(feature = "hashkey")]
     #[test]
-    fn hashkey_profile_classifies_protected_b20_native_state() {
+    fn hashkey_profile_classifies_protected_h20_native_state() {
         let profile = NetworkConfigs::with_hashkey().resolve();
-        let dynamic = B20Variant::Asset
+        let dynamic = H20Variant::Asset
             .compute_address(Address::repeat_byte(0x11), B256::repeat_byte(0x22))
             .0;
 
-        assert!(profile.is_b20_singleton(B20_FACTORY));
-        assert!(profile.protects_b20_native_state(B20_ACTIVATION_REGISTRY, B256::ZERO));
-        assert!(profile.protects_b20_native_state(dynamic, keccak256([0xef])));
-        assert!(!profile.protects_b20_native_state(dynamic, alloy_primitives::KECCAK256_EMPTY));
-        assert!(!profile.protects_b20_native_state(Address::repeat_byte(0x22), keccak256([0xef])));
-        assert!(!NetworkConfigs::default().resolve().is_b20_singleton(B20_FACTORY));
+        assert!(profile.is_h20_singleton(H20_FACTORY));
+        assert!(profile.protects_h20_native_state(H20_ACTIVATION_REGISTRY, B256::ZERO));
+        assert!(profile.protects_h20_native_state(dynamic, keccak256([0xef])));
+        assert!(!profile.protects_h20_native_state(dynamic, alloy_primitives::KECCAK256_EMPTY));
+        assert!(!profile.protects_h20_native_state(Address::repeat_byte(0x22), keccak256([0xef])));
+        assert!(!NetworkConfigs::default().resolve().is_h20_singleton(H20_FACTORY));
     }
 
     #[cfg(feature = "hashkey")]
     #[test]
     fn hashkey_trace_identity_follows_activation_snapshot() {
-        let config = B20Config::new(Some(100), Some(Address::repeat_byte(0x11))).unwrap();
-        let profile = NetworkConfigs::with_hashkey().resolve().with_b20_config_for_test(config);
-        let asset = B20Variant::Asset
+        let config = H20Config::new(Some(100), Some(Address::repeat_byte(0x11))).unwrap();
+        let profile = NetworkConfigs::with_hashkey().resolve().with_h20_config_for_test(config);
+        let asset = H20Variant::Asset
             .compute_address(Address::repeat_byte(0x22), B256::repeat_byte(0x33))
             .0;
 
         assert_eq!(profile.trace_identity(asset, NetworkExecutionContext::new(177, 99)), None);
         assert_eq!(
             profile.trace_identity(asset, NetworkExecutionContext::new(177, 100)),
-            Some(NetworkTraceIdentity::B20Asset)
+            Some(NetworkTraceIdentity::H20Asset)
         );
         assert_eq!(
             profile.trace_identity(asset, NetworkExecutionContext::new(177, 101)),
-            Some(NetworkTraceIdentity::B20Asset)
+            Some(NetworkTraceIdentity::H20Asset)
         );
         assert_eq!(
-            profile.trace_identity(B20_FACTORY, NetworkExecutionContext::new(177, 100)),
-            Some(NetworkTraceIdentity::B20Factory)
+            profile.trace_identity(H20_FACTORY, NetworkExecutionContext::new(177, 100)),
+            Some(NetworkTraceIdentity::H20Factory)
         );
-        assert_eq!(NetworkTraceIdentity::B20Factory.fixed_address(), Some(B20_FACTORY));
-        assert_eq!(NetworkTraceIdentity::B20Asset.fixed_address(), None);
+        assert_eq!(NetworkTraceIdentity::H20Factory.fixed_address(), Some(H20_FACTORY));
+        assert_eq!(NetworkTraceIdentity::H20Asset.fixed_address(), None);
         assert_eq!(NetworkTraceIdentity::fixed_identities().len(), 3);
         assert_eq!(
             NetworkConfigs::with_optimism()
@@ -1013,23 +1013,23 @@ mod tests {
     #[cfg(feature = "hashkey")]
     #[test]
     fn hashkey_capability_requires_runtime_selection() {
-        const B20_FACTORY: Address =
-            alloy_primitives::address!("B20F000000000000000000000000000000000000");
+        const H20_FACTORY: Address =
+            alloy_primitives::address!("0177FF0000000000000000000000000000000000");
 
         let ethereum = NetworkConfigs::default().resolve();
         assert!(!ethereum.is_hashkey());
-        assert_eq!(ethereum.b20_config().activation_time(), None);
-        assert_eq!(ethereum.b20_config().activation_admin(), None);
+        assert_eq!(ethereum.h20_config().activation_time(), None);
+        assert_eq!(ethereum.h20_config().activation_admin(), None);
 
         let optimism = NetworkConfigs::with_optimism().resolve();
         assert!(!optimism.is_hashkey());
-        assert_eq!(optimism.b20_config().activation_time(), None);
-        assert_eq!(optimism.b20_config().activation_admin(), None);
+        assert_eq!(optimism.h20_config().activation_time(), None);
+        assert_eq!(optimism.h20_config().activation_admin(), None);
         let mut precompiles = PrecompilesMap::from_static(Precompiles::prague());
         optimism
             .inject_precompiles(&mut precompiles, NetworkExecutionContext::new(177, 0))
             .unwrap();
-        assert!(precompiles.get(&B20_FACTORY).is_none());
+        assert!(precompiles.get(&H20_FACTORY).is_none());
 
         let configs = NetworkConfigs::with_hashkey();
         assert!(configs.is_optimism());
@@ -1048,51 +1048,51 @@ mod tests {
 
     #[cfg(feature = "hashkey")]
     #[test]
-    fn hashkey_profile_projects_active_b20_precompiles() {
-        const B20_FACTORY: Address =
-            alloy_primitives::address!("B20F000000000000000000000000000000000000");
-        const B20_ACTIVATION_REGISTRY: Address =
-            alloy_primitives::address!("8453000000000000000000000000000000000001");
-        const B20_POLICY_REGISTRY: Address =
-            alloy_primitives::address!("8453000000000000000000000000000000000002");
+    fn hashkey_profile_projects_active_h20_precompiles() {
+        const H20_FACTORY: Address =
+            alloy_primitives::address!("0177FF0000000000000000000000000000000000");
+        const H20_ACTIVATION_REGISTRY: Address =
+            alloy_primitives::address!("0177FF0000000000000000000000000000000001");
+        const H20_POLICY_REGISTRY: Address =
+            alloy_primitives::address!("0177FF0000000000000000000000000000000002");
 
         let profile = NetworkConfigs::with_hashkey().resolve();
         let mut precompiles = PrecompilesMap::from_static(Precompiles::prague());
         profile.inject_precompiles(&mut precompiles, NetworkExecutionContext::new(177, 0)).unwrap();
 
-        assert!(precompiles.get(&B20_FACTORY).is_some());
-        assert!(precompiles.get(&B20_ACTIVATION_REGISTRY).is_some());
-        assert!(precompiles.get(&B20_POLICY_REGISTRY).is_some());
+        assert!(precompiles.get(&H20_FACTORY).is_some());
+        assert!(precompiles.get(&H20_ACTIVATION_REGISTRY).is_some());
+        assert!(precompiles.get(&H20_POLICY_REGISTRY).is_some());
 
         let mut reusable = PrecompilesMap::from_static(Precompiles::prague());
         profile.inject_reusable_precompiles(&mut reusable);
-        assert!(reusable.get(&B20_FACTORY).is_none());
-        assert!(reusable.get(&B20_ACTIVATION_REGISTRY).is_none());
-        assert!(reusable.get(&B20_POLICY_REGISTRY).is_none());
+        assert!(reusable.get(&H20_FACTORY).is_none());
+        assert!(reusable.get(&H20_ACTIVATION_REGISTRY).is_none());
+        assert!(reusable.get(&H20_POLICY_REGISTRY).is_none());
 
         let labels = profile.precompile_labels(None);
-        assert_eq!(labels.get(&B20_FACTORY), Some(&"B20Factory".to_string()));
+        assert_eq!(labels.get(&H20_FACTORY), Some(&"H20Factory".to_string()));
         assert_eq!(
-            labels.get(&B20_ACTIVATION_REGISTRY),
-            Some(&"B20ActivationRegistry".to_string())
+            labels.get(&H20_ACTIVATION_REGISTRY),
+            Some(&"H20ActivationRegistry".to_string())
         );
-        assert_eq!(labels.get(&B20_POLICY_REGISTRY), Some(&"B20PolicyRegistry".to_string()));
+        assert_eq!(labels.get(&H20_POLICY_REGISTRY), Some(&"H20PolicyRegistry".to_string()));
 
         let inventory = profile.precompile_inventory(None);
-        assert_eq!(inventory.get("B20Factory"), Some(&B20_FACTORY));
-        assert_eq!(inventory.get("B20ActivationRegistry"), Some(&B20_ACTIVATION_REGISTRY));
-        assert_eq!(inventory.get("B20PolicyRegistry"), Some(&B20_POLICY_REGISTRY));
+        assert_eq!(inventory.get("H20Factory"), Some(&H20_FACTORY));
+        assert_eq!(inventory.get("H20ActivationRegistry"), Some(&H20_ACTIVATION_REGISTRY));
+        assert_eq!(inventory.get("H20PolicyRegistry"), Some(&H20_POLICY_REGISTRY));
     }
 
     #[cfg(feature = "hashkey")]
     #[test]
     fn hashkey_profile_rejects_singleton_collision() {
-        const B20_FACTORY: Address =
-            alloy_primitives::address!("B20F000000000000000000000000000000000000");
+        const H20_FACTORY: Address =
+            alloy_primitives::address!("0177FF0000000000000000000000000000000000");
 
         let conflicting_id = PrecompileId::Custom(std::borrow::Cow::Borrowed("conflict-test"));
         let mut precompiles = PrecompilesMap::from_static(Precompiles::prague());
-        precompiles.apply_precompile(&B20_FACTORY, {
+        precompiles.apply_precompile(&H20_FACTORY, {
             let conflicting_id = conflicting_id.clone();
             move |_| {
                 Some(alloy_evm::precompiles::DynPrecompile::new(conflicting_id, |_| {
@@ -1107,7 +1107,7 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(err.profile(), "hashkey");
-        assert_eq!(err.address(), B20_FACTORY);
+        assert_eq!(err.address(), H20_FACTORY);
         assert_eq!(err.existing(), &conflicting_id);
         assert_eq!(err.requested(), None);
     }

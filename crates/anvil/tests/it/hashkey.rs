@@ -1,4 +1,4 @@
-//! Anvil integration tests for the HashKey B20 network profile.
+//! Anvil integration tests for the HashKey H20 network profile.
 
 #[cfg(feature = "cli")]
 use std::{
@@ -22,25 +22,25 @@ use alloy_sol_types::{SolCall, sol};
 use anvil::{NodeConfig, spawn};
 use foundry_evm_networks::NetworkConfigs;
 
-const B20_FACTORY: Address = address!("B20F000000000000000000000000000000000000");
-const B20_ACTIVATION_REGISTRY: Address = address!("8453000000000000000000000000000000000001");
-const B20_POLICY_REGISTRY: Address = address!("8453000000000000000000000000000000000002");
-const B20_FEATURE_SLOTS: [U256; 3] = [
+const H20_FACTORY: Address = address!("0177FF0000000000000000000000000000000000");
+const H20_ACTIVATION_REGISTRY: Address = address!("0177FF0000000000000000000000000000000001");
+const H20_POLICY_REGISTRY: Address = address!("0177FF0000000000000000000000000000000002");
+const H20_FEATURE_SLOTS: [U256; 3] = [
     alloy_primitives::uint!(
         0x8c5327ddcca092db72284503162323c6e8d392394b1d5c71991227bbc26f7c07_U256
     ),
     alloy_primitives::uint!(
-        0xca7c276524c5aeaac4d56c8a3d36eb5f9a64f60841fb65b539c99c21ca7df109_U256
+        0xf0464d76cbf5393c72bf1d37f7a2cab26dda96f4ea5f765002334b823a265ffa_U256
     ),
     alloy_primitives::uint!(
-        0x819420403a306232adb8ee78d9f35b5090371155b34376cf9b020e30029278e5_U256
+        0x7bbefaa09825c91a707f8f01422fffff1ab80d1a560229cbf4820368ff7f9576_U256
     ),
 ];
 
 #[cfg(feature = "cli")]
 sol! {
-    interface IB20Factory {
-        function isB20(address token) external view returns (bool);
+    interface IH20Factory {
+        function isH20(address token) external view returns (bool);
     }
 }
 
@@ -70,12 +70,12 @@ fn anvil_binary() -> PathBuf {
 }
 
 async fn assert_hashkey_baseline(provider: &impl Provider<AnyNetwork>) {
-    for address in [B20_FACTORY, B20_ACTIVATION_REGISTRY, B20_POLICY_REGISTRY] {
+    for address in [H20_FACTORY, H20_ACTIVATION_REGISTRY, H20_POLICY_REGISTRY] {
         assert_eq!(provider.get_code_at(address).await.unwrap(), Bytes::from_static(&[0xef]));
     }
-    for slot in B20_FEATURE_SLOTS {
+    for slot in H20_FEATURE_SLOTS {
         assert_eq!(
-            provider.get_storage_at(B20_ACTIVATION_REGISTRY, slot).await.unwrap(),
+            provider.get_storage_at(H20_ACTIVATION_REGISTRY, slot).await.unwrap(),
             U256::from(1)
         );
     }
@@ -87,35 +87,43 @@ async fn hashkey_standalone_reset_and_inventory() {
         spawn(NodeConfig::test().with_networks(NetworkConfigs::with_hashkey())).await;
     let provider = handle.http_provider();
     assert_hashkey_baseline(&provider).await;
-    api.anvil_set_storage_at(B20_ACTIVATION_REGISTRY, B20_FEATURE_SLOTS[2], U256::ZERO.into())
+    api.anvil_set_storage_at(H20_ACTIVATION_REGISTRY, H20_FEATURE_SLOTS[2], U256::ZERO.into())
         .await
         .unwrap();
     let snapshot = api.evm_snapshot().await.unwrap();
-    api.anvil_set_storage_at(B20_ACTIVATION_REGISTRY, B20_FEATURE_SLOTS[2], U256::from(7).into())
+    api.anvil_set_storage_at(H20_ACTIVATION_REGISTRY, H20_FEATURE_SLOTS[2], U256::from(7).into())
         .await
         .unwrap();
     assert!(api.evm_revert(snapshot).await.unwrap());
     assert_eq!(
-        provider.get_storage_at(B20_ACTIVATION_REGISTRY, B20_FEATURE_SLOTS[2]).await.unwrap(),
+        provider.get_storage_at(H20_ACTIVATION_REGISTRY, H20_FEATURE_SLOTS[2]).await.unwrap(),
         U256::ZERO
     );
 
     let config: EthConfig = provider.client().request("eth_config", ()).await.unwrap();
     for (name, address) in [
-        ("B20Factory", B20_FACTORY),
-        ("B20ActivationRegistry", B20_ACTIVATION_REGISTRY),
-        ("B20PolicyRegistry", B20_POLICY_REGISTRY),
+        ("H20Factory", H20_FACTORY),
+        ("H20ActivationRegistry", H20_ACTIVATION_REGISTRY),
+        ("H20PolicyRegistry", H20_POLICY_REGISTRY),
     ] {
         assert_eq!(config.current.precompiles.get(name), Some(&address));
     }
     assert_eq!(
-        config.current.precompiles.values().filter(|address| address.as_slice()[0] == 0xb2).count(),
-        1,
-        "static inventory must not enumerate dynamic B20 token addresses",
+        config
+            .current
+            .precompiles
+            .values()
+            .filter(|address| {
+                let bytes = address.as_slice();
+                bytes[..2] == [0x01, 0x77] && bytes[2..10] == [0; 8]
+            })
+            .count(),
+        0,
+        "static inventory must not enumerate dynamic H20 token addresses",
     );
 
-    api.anvil_set_code(B20_FACTORY, Bytes::from_static(&[0xde, 0xad])).await.unwrap();
-    api.anvil_set_storage_at(B20_ACTIVATION_REGISTRY, B20_FEATURE_SLOTS[2], U256::ZERO.into())
+    api.anvil_set_code(H20_FACTORY, Bytes::from_static(&[0xde, 0xad])).await.unwrap();
+    api.anvil_set_storage_at(H20_ACTIVATION_REGISTRY, H20_FEATURE_SLOTS[2], U256::ZERO.into())
         .await
         .unwrap();
     api.anvil_reset(None).await.unwrap();
@@ -144,13 +152,13 @@ async fn hashkey_custom_genesis_preserves_unowned_state() {
           "mixHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
           "coinbase": "0x0000000000000000000000000000000000000000",
           "alloc": {
-            "b20f000000000000000000000000000000000000": {
+            "0177ff0000000000000000000000000000000000": {
               "balance": "0x2a",
               "nonce": "0x9",
               "code": "0xdead",
               "storage": {"0x0000000000000000000000000000000000000000000000000000000000000001": "0x0000000000000000000000000000000000000000000000000000000000000007"}
             },
-            "8453000000000000000000000000000000000001": {
+            "0177FF0000000000000000000000000000000001": {
               "balance": "0x1",
               "nonce": "0x8",
               "code": "0xbeef",
@@ -175,10 +183,10 @@ async fn hashkey_custom_genesis_preserves_unowned_state() {
     .await;
     let provider = handle.http_provider();
 
-    assert_eq!(provider.get_balance(B20_FACTORY).await.unwrap(), U256::from(42));
-    assert_eq!(provider.get_transaction_count(B20_FACTORY).await.unwrap(), 1);
-    assert_eq!(provider.get_code_at(B20_FACTORY).await.unwrap(), Bytes::from_static(&[0xef]));
-    assert_eq!(provider.get_storage_at(B20_FACTORY, U256::from(1)).await.unwrap(), U256::from(7));
+    assert_eq!(provider.get_balance(H20_FACTORY).await.unwrap(), U256::from(42));
+    assert_eq!(provider.get_transaction_count(H20_FACTORY).await.unwrap(), 1);
+    assert_eq!(provider.get_code_at(H20_FACTORY).await.unwrap(), Bytes::from_static(&[0xef]));
+    assert_eq!(provider.get_storage_at(H20_FACTORY, U256::from(1)).await.unwrap(), U256::from(7));
     assert_eq!(
         provider.get_balance(address!("4200000000000000000000000000000000000042")).await.unwrap(),
         U256::from(43)
@@ -190,14 +198,14 @@ async fn hashkey_custom_genesis_preserves_unowned_state() {
             .unwrap(),
         U256::from(8)
     );
-    assert_eq!(provider.get_balance(B20_ACTIVATION_REGISTRY).await.unwrap(), U256::from(1));
-    assert_eq!(provider.get_transaction_count(B20_ACTIVATION_REGISTRY).await.unwrap(), 1);
+    assert_eq!(provider.get_balance(H20_ACTIVATION_REGISTRY).await.unwrap(), U256::from(1));
+    assert_eq!(provider.get_transaction_count(H20_ACTIVATION_REGISTRY).await.unwrap(), 1);
     assert_eq!(
-        provider.get_code_at(B20_ACTIVATION_REGISTRY).await.unwrap(),
+        provider.get_code_at(H20_ACTIVATION_REGISTRY).await.unwrap(),
         Bytes::from_static(&[0xef])
     );
     assert_eq!(
-        provider.get_storage_at(B20_ACTIVATION_REGISTRY, B20_FEATURE_SLOTS[0]).await.unwrap(),
+        provider.get_storage_at(H20_ACTIVATION_REGISTRY, H20_FEATURE_SLOTS[0]).await.unwrap(),
         U256::from(1)
     );
 }
@@ -207,7 +215,7 @@ async fn hashkey_fork_to_standalone_discards_remote_backing() {
     let (source_api, source_handle) = spawn(NodeConfig::test()).await;
     let remote_account = address!("4200000000000000000000000000000000000042");
     let unseen_remote_account = address!("4300000000000000000000000000000000000043");
-    let dynamic_b20_token = address!("B200000000000000000000000000000000000000");
+    let dynamic_h20_token = address!("0177000000000000000000000000000000000000");
     let slot = U256::from(7);
     let unseen_slot = U256::from(8);
     let remote_code = Bytes::from_static(&[0xde, 0xad, 0xbe, 0xef]);
@@ -223,8 +231,8 @@ async fn hashkey_fork_to_standalone_discards_remote_backing() {
         .anvil_set_storage_at(unseen_remote_account, unseen_slot, unseen_remote_value.into())
         .await
         .unwrap();
-    source_api.anvil_set_code(dynamic_b20_token, Bytes::from_static(&[0xef])).await.unwrap();
-    source_api.anvil_set_storage_at(dynamic_b20_token, slot, remote_value.into()).await.unwrap();
+    source_api.anvil_set_code(dynamic_h20_token, Bytes::from_static(&[0xef])).await.unwrap();
+    source_api.anvil_set_storage_at(dynamic_h20_token, slot, remote_value.into()).await.unwrap();
 
     let (api, handle) = spawn(
         NodeConfig::test()
@@ -239,8 +247,8 @@ async fn hashkey_fork_to_standalone_discards_remote_backing() {
     assert_eq!(provider.get_balance(remote_account).await.unwrap(), remote_value);
     assert_eq!(provider.get_code_at(remote_account).await.unwrap(), remote_code);
     assert_eq!(provider.get_storage_at(remote_account, slot).await.unwrap(), remote_value);
-    assert_eq!(provider.get_code_at(dynamic_b20_token).await.unwrap(), Bytes::from_static(&[0xef]));
-    assert_eq!(provider.get_storage_at(dynamic_b20_token, slot).await.unwrap(), remote_value);
+    assert_eq!(provider.get_code_at(dynamic_h20_token).await.unwrap(), Bytes::from_static(&[0xef]));
+    assert_eq!(provider.get_storage_at(dynamic_h20_token, slot).await.unwrap(), remote_value);
 
     api.anvil_reset(None).await.unwrap();
 
@@ -253,8 +261,8 @@ async fn hashkey_fork_to_standalone_discards_remote_backing() {
         provider.get_storage_at(unseen_remote_account, unseen_slot).await.unwrap(),
         U256::ZERO
     );
-    assert!(provider.get_code_at(dynamic_b20_token).await.unwrap().is_empty());
-    assert_eq!(provider.get_storage_at(dynamic_b20_token, slot).await.unwrap(), U256::ZERO);
+    assert!(provider.get_code_at(dynamic_h20_token).await.unwrap().is_empty());
+    assert_eq!(provider.get_storage_at(dynamic_h20_token, slot).await.unwrap(), U256::ZERO);
     assert_eq!(provider.get_balance(genesis_account).await.unwrap(), genesis_balance);
     assert_hashkey_baseline(&provider).await;
 }
@@ -264,11 +272,11 @@ async fn hashkey_fork_preserves_remote_state_across_reset() {
     let (source_api, source_handle) = spawn(NodeConfig::test()).await;
     let remote_code = Bytes::from_static(&[0xde, 0xad, 0xbe, 0xef]);
     let remote_feature_value = U256::from(7);
-    source_api.anvil_set_code(B20_FACTORY, remote_code.clone()).await.unwrap();
+    source_api.anvil_set_code(H20_FACTORY, remote_code.clone()).await.unwrap();
     source_api
         .anvil_set_storage_at(
-            B20_ACTIVATION_REGISTRY,
-            B20_FEATURE_SLOTS[2],
+            H20_ACTIVATION_REGISTRY,
+            H20_FEATURE_SLOTS[2],
             remote_feature_value.into(),
         )
         .await
@@ -282,25 +290,25 @@ async fn hashkey_fork_preserves_remote_state_across_reset() {
     .await;
     let provider = handle.http_provider();
 
-    assert_eq!(provider.get_code_at(B20_FACTORY).await.unwrap(), remote_code);
+    assert_eq!(provider.get_code_at(H20_FACTORY).await.unwrap(), remote_code);
     assert_eq!(
-        provider.get_storage_at(B20_ACTIVATION_REGISTRY, B20_FEATURE_SLOTS[2]).await.unwrap(),
+        provider.get_storage_at(H20_ACTIVATION_REGISTRY, H20_FEATURE_SLOTS[2]).await.unwrap(),
         remote_feature_value,
     );
-    assert!(provider.get_code_at(B20_POLICY_REGISTRY).await.unwrap().is_empty());
+    assert!(provider.get_code_at(H20_POLICY_REGISTRY).await.unwrap().is_empty());
 
     api.anvil_reset(Some(Forking::default())).await.unwrap();
 
-    assert_eq!(provider.get_code_at(B20_FACTORY).await.unwrap(), remote_code);
+    assert_eq!(provider.get_code_at(H20_FACTORY).await.unwrap(), remote_code);
     assert_eq!(
-        provider.get_storage_at(B20_ACTIVATION_REGISTRY, B20_FEATURE_SLOTS[2]).await.unwrap(),
+        provider.get_storage_at(H20_ACTIVATION_REGISTRY, H20_FEATURE_SLOTS[2]).await.unwrap(),
         remote_feature_value,
     );
 }
 
 #[cfg(feature = "cli")]
 #[tokio::test(flavor = "multi_thread")]
-async fn hashkey_cli_starts_with_b20_baseline() {
+async fn hashkey_cli_starts_with_h20_baseline() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
     drop(listener);
@@ -335,7 +343,7 @@ async fn hashkey_cli_starts_with_b20_baseline() {
 
 #[cfg(feature = "cli")]
 #[tokio::test(flavor = "multi_thread")]
-async fn hashkey_cli_prints_profile_aware_b20_traces() {
+async fn hashkey_cli_prints_profile_aware_h20_traces() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
     drop(listener);
@@ -380,10 +388,10 @@ async fn hashkey_cli_prints_profile_aware_b20_traces() {
     }
     assert!(ready, "anvil --network hashkey should start serving RPC");
 
-    let factory = B20_FACTORY;
+    let factory = H20_FACTORY;
     let tx = TransactionRequest::default()
         .to(factory)
-        .with_input(IB20Factory::isB20Call { token: Address::repeat_byte(0x11) }.abi_encode());
+        .with_input(IH20Factory::isH20Call { token: Address::repeat_byte(0x11) }.abi_encode());
     provider.call(tx.into()).await.unwrap();
 
     // Synchronize on the trace output instead of sleeping: the trace may not have reached the
@@ -395,7 +403,7 @@ async fn hashkey_cli_prints_profile_aware_b20_traces() {
     while !output.contains("← [Return] false") {
         assert!(
             std::time::Instant::now() < deadline,
-            "anvil did not print the B20 trace; log={output:?}",
+            "anvil did not print the H20 trace; log={output:?}",
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
         output = strip_ansi(&fs::read_to_string(&trace_log).unwrap_or_default());
@@ -410,7 +418,7 @@ async fn hashkey_cli_prints_profile_aware_b20_traces() {
     assert_eq!(
         trace,
         r#"Traces=
-  [12] B20Factory::isB20(0x1111111111111111111111111111111111111111)
+  [12] H20Factory::isH20(0x1111111111111111111111111111111111111111)
     └─ ← [Return] false"#
     );
 }

@@ -276,36 +276,36 @@ repl_test!(chisel_can_run_with_live_logs_flag, "--live-logs", init = true, |repl
 });
 
 #[cfg(feature = "hashkey")]
-repl_test!(hashkey_b20_stateful_session, "--network hashkey --offline -vvvv", |repl| {
+repl_test!(hashkey_h20_stateful_session, "--network hashkey --offline -vvvv", |repl| {
     repl.sendln(
-        "interface IB20Factory { enum B20Variant { ASSET, STABLECOIN } struct B20AssetCreateParams { uint8 version; string name; string symbol; address initialAdmin; uint8 decimals; } function createB20(B20Variant variant, bytes32 salt, bytes calldata params, bytes[] calldata initCalls) external returns (address token); }",
+        "interface IH20Factory { enum H20Variant { ASSET, STABLECOIN } struct H20AssetCreateParams { uint8 version; string name; string symbol; address initialAdmin; uint8 decimals; } function createH20(H20Variant variant, bytes32 salt, bytes calldata params, bytes[] calldata initCalls) external returns (address token); }",
     );
     repl.sendln(
-        "interface IB20Asset { function MINT_ROLE() external view returns (bytes32); function grantRole(bytes32 role, address account) external; function mint(address account, uint256 amount) external; function balanceOf(address account) external view returns (uint256); }",
+        "interface IH20Asset { function MINT_ROLE() external view returns (bytes32); function grantRole(bytes32 role, address account) external; function mint(address account, uint256 amount) external; function balanceOf(address account) external view returns (uint256); }",
     );
     repl.sendln(
-        "function b20Factory() internal pure returns (IB20Factory) { return IB20Factory(0xB20f000000000000000000000000000000000000); }",
+        "function h20Factory() internal pure returns (IH20Factory) { return IH20Factory(0x0177FF0000000000000000000000000000000000); }",
     );
 
     repl.sendln(
-        "function markerLength() public view returns (uint256) { return address(b20Factory()).code.length; }",
+        "function markerLength() public view returns (uint256) { return address(h20Factory()).code.length; }",
     );
     repl.sendln("markerLength()");
     repl.expect("Decimal: 1");
 
     repl.sendln(
-        "function exerciseB20(bytes32 salt) public returns (uint256) { bytes[] memory initCalls = new bytes[](0); bytes memory params = abi.encode(IB20Factory.B20AssetCreateParams({version: 1, name: \"Chisel Asset\", symbol: \"CHS\", initialAdmin: address(this), decimals: 18})); address token = b20Factory().createB20(IB20Factory.B20Variant.ASSET, salt, params, initCalls); IB20Asset asset = IB20Asset(token); asset.grantRole(asset.MINT_ROLE(), address(this)); asset.mint(address(0xBEEF), 42); return asset.balanceOf(address(0xBEEF)); }",
+        "function exerciseH20(bytes32 salt) public returns (uint256) { bytes[] memory initCalls = new bytes[](0); bytes memory params = abi.encode(IH20Factory.H20AssetCreateParams({version: 1, name: \"Chisel Asset\", symbol: \"CHS\", initialAdmin: address(this), decimals: 18})); address token = h20Factory().createH20(IH20Factory.H20Variant.ASSET, salt, params, initCalls); IH20Asset asset = IH20Asset(token); asset.grantRole(asset.MINT_ROLE(), address(this)); asset.mint(address(0xBEEF), 42); return asset.balanceOf(address(0xBEEF)); }",
     );
-    repl.sendln("uint256 observed = exerciseB20(bytes32(uint256(43)))");
-    repl.expect("B20Factory::createB20");
-    repl.expect("B20Asset::mint");
+    repl.sendln("uint256 observed = exerciseH20(bytes32(uint256(43)))");
+    repl.expect("H20Factory::createH20");
+    repl.expect("H20Asset::mint");
     repl.sendln("observed");
     repl.expect("Decimal: 42");
 
     repl.sendln(
-        "function duplicateB20() public { exerciseB20(bytes32(uint256(44))); exerciseB20(bytes32(uint256(44))); }",
+        "function duplicateH20() public { exerciseH20(bytes32(uint256(44))); exerciseH20(bytes32(uint256(44))); }",
     );
-    repl.sendln_raw("duplicateB20();");
+    repl.sendln_raw("duplicateH20();");
     repl.expect("TokenAlreadyExists(");
     repl.expect_prompt();
 });

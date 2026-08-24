@@ -2,18 +2,18 @@
 pragma solidity ^0.8.0;
 
 import {Test} from "forge-std/Test.sol";
-import {B20Caller, IB20} from "../src/B20.sol";
+import {H20Caller, IH20} from "../src/H20.sol";
 
-contract B20ProtectionTest is Test {
-    B20Caller caller;
+contract H20ProtectionTest is Test {
+    H20Caller caller;
 
-    address constant FACTORY = 0xB20f000000000000000000000000000000000000;
-    address constant ACTIVATION_REGISTRY = 0x8453000000000000000000000000000000000001;
-    address constant POLICY_REGISTRY = 0x8453000000000000000000000000000000000002;
-    bytes32 constant ASSET_FEATURE = keccak256("base.b20_asset");
+    address constant FACTORY = 0x0177FF0000000000000000000000000000000000;
+    address constant ACTIVATION_REGISTRY = 0x0177FF0000000000000000000000000000000001;
+    address constant POLICY_REGISTRY = 0x0177FF0000000000000000000000000000000002;
+    bytes32 constant ASSET_FEATURE = keccak256("hsk.h20_asset");
 
     function setUp() public {
-        caller = new B20Caller();
+        caller = new H20Caller();
     }
 
     function testLoadRemainsAvailableForProtectedState() public {
@@ -50,7 +50,7 @@ contract B20ProtectionTest is Test {
         this.etch(token, hex"00");
 
         assertEq(token.code, hex"ef", "dynamic marker changed");
-        assertEq(IB20(token).name(), "Protected", "dynamic storage changed");
+        assertEq(IH20(token).name(), "Protected", "dynamic storage changed");
     }
 
     function testUninitializedDynamicAddressRemainsMutable() public {

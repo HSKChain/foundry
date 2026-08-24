@@ -40,7 +40,7 @@ src = "src"
 out = "out"
 network = "hashkey"
 EOF
-cat > "$SMOKE_DIR/src/B20Smoke.sol" <<'EOF'
+cat > "$SMOKE_DIR/src/H20Smoke.sol" <<'EOF'
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
@@ -48,12 +48,12 @@ interface IActivationRegistry {
     function isActivated(bytes32 feature) external view returns (bool);
 }
 
-contract B20Smoke {
+contract H20Smoke {
     IActivationRegistry constant REGISTRY =
-        IActivationRegistry(0x8453000000000000000000000000000000000001);
+        IActivationRegistry(0x0177FF0000000000000000000000000000000001);
 
     function assetActive() external view returns (bool) {
-        return REGISTRY.isActivated(keccak256("base.b20_asset"));
+        return REGISTRY.isActivated(keccak256("hsk.h20_asset"));
     }
 }
 EOF
@@ -80,21 +80,21 @@ if [[ "$ready" -ne 1 ]]; then
   exit 1
 fi
 
-asset_feature="$("${bins[cast]}" keccak "base.b20_asset")"
+asset_feature="$("${bins[cast]}" keccak "hsk.h20_asset")"
 active="$("${bins[cast]}" call \
   --rpc-url "$RPC" \
-  0x8453000000000000000000000000000000000001 \
+  0x0177FF0000000000000000000000000000000001 \
   "isActivated(bytes32)(bool)" \
   "$asset_feature")"
 if [[ "$active" != "true" ]]; then
-  echo "error: standalone B20Asset feature is not active: $active" >&2
+  echo "error: standalone H20Asset feature is not active: $active" >&2
   exit 1
 fi
 
 factory_code="$("${bins[cast]}" code \
   --rpc-url "$RPC" \
-  0xB20F000000000000000000000000000000000000)"
+  0x0177FF0000000000000000000000000000000000)"
 if [[ "${factory_code,,}" != "0xef" ]]; then
-  echo "error: standalone B20 Factory marker is $factory_code, expected 0xef" >&2
+  echo "error: standalone H20 Factory marker is $factory_code, expected 0xef" >&2
   exit 1
 fi

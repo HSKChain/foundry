@@ -1,4 +1,4 @@
-//! HashKey B20 trace decoding backed by the pinned canonical interfaces.
+//! HashKey H20 trace decoding backed by the pinned canonical interfaces.
 
 use super::indexed_inputs;
 use alloy_json_abi::{Event, Function, JsonAbi};
@@ -57,11 +57,11 @@ const FACTORY_ABI: &[&str] = &[
     "error InvalidCurrency(string code)",
     "error InvalidDecimals(uint8 decimals)",
     "error InitCallFailed(uint256 index)",
-    "event B20Created(address indexed token,uint8 indexed variant,string name,string symbol,uint8 decimals,bytes variantParams)",
-    "function createB20(uint8 variant,bytes32 salt,bytes params,bytes[] initCalls) returns (address token)",
-    "function getB20Address(uint8 variant,address sender,bytes32 salt) view returns (address)",
-    "function isB20(address token) view returns (bool)",
-    "function isB20Initialized(address token) view returns (bool)",
+    "event H20Created(address indexed token,uint8 indexed variant,string name,string symbol,uint8 decimals,bytes variantParams)",
+    "function createH20(uint8 variant,bytes32 salt,bytes params,bytes[] initCalls) returns (address token)",
+    "function getH20Address(uint8 variant,address sender,bytes32 salt) view returns (address)",
+    "function isH20(address token) view returns (bool)",
+    "function isH20Initialized(address token) view returns (bool)",
 ];
 
 const COMMON_ABI: &[&str] = &[
@@ -213,14 +213,14 @@ impl NetworkAbi {
 
     fn for_identity(identity: NetworkTraceIdentity) -> Self {
         let parse = |items: &[&str]| {
-            JsonAbi::parse(items.iter().copied()).expect("pinned HashKey B20 ABI is valid")
+            JsonAbi::parse(items.iter().copied()).expect("pinned HashKey H20 ABI is valid")
         };
         match identity {
-            NetworkTraceIdentity::B20Factory => Self::new(&[&parse(FACTORY_ABI)]),
-            NetworkTraceIdentity::B20ActivationRegistry => Self::new(&[&parse(ACTIVATION_ABI)]),
-            NetworkTraceIdentity::B20PolicyRegistry => Self::new(&[&parse(POLICY_ABI)]),
-            NetworkTraceIdentity::B20Asset => Self::new(&[&parse(COMMON_ABI), &parse(ASSET_ABI)]),
-            NetworkTraceIdentity::B20Stablecoin => {
+            NetworkTraceIdentity::H20Factory => Self::new(&[&parse(FACTORY_ABI)]),
+            NetworkTraceIdentity::H20ActivationRegistry => Self::new(&[&parse(ACTIVATION_ABI)]),
+            NetworkTraceIdentity::H20PolicyRegistry => Self::new(&[&parse(POLICY_ABI)]),
+            NetworkTraceIdentity::H20Asset => Self::new(&[&parse(COMMON_ABI), &parse(ASSET_ABI)]),
+            NetworkTraceIdentity::H20Stablecoin => {
                 Self::new(&[&parse(COMMON_ABI), &parse(STABLECOIN_ABI)])
             }
         }
@@ -235,11 +235,11 @@ pub(super) fn network_abi(identity: NetworkTraceIdentity) -> &'static NetworkAbi
     static STABLECOIN: OnceLock<NetworkAbi> = OnceLock::new();
 
     let cache = match identity {
-        NetworkTraceIdentity::B20Factory => &FACTORY,
-        NetworkTraceIdentity::B20ActivationRegistry => &ACTIVATION,
-        NetworkTraceIdentity::B20PolicyRegistry => &POLICY,
-        NetworkTraceIdentity::B20Asset => &ASSET,
-        NetworkTraceIdentity::B20Stablecoin => &STABLECOIN,
+        NetworkTraceIdentity::H20Factory => &FACTORY,
+        NetworkTraceIdentity::H20ActivationRegistry => &ACTIVATION,
+        NetworkTraceIdentity::H20PolicyRegistry => &POLICY,
+        NetworkTraceIdentity::H20Asset => &ASSET,
+        NetworkTraceIdentity::H20Stablecoin => &STABLECOIN,
     };
     cache.get_or_init(|| NetworkAbi::for_identity(identity))
 }
@@ -248,8 +248,8 @@ pub(super) fn network_abi(identity: NetworkTraceIdentity) -> &'static NetworkAbi
 mod tests {
     use super::*;
     use alloy_sol_types::{SolEvent, SolEventInterface, SolInterface, TopicList};
-    use hsk_b20_precompiles::{
-        IActivationRegistry, IB20, IB20Asset, IB20Factory, IB20Stablecoin, IPolicyRegistry,
+    use hsk_h20_precompiles::{
+        IActivationRegistry, IH20, IH20Asset, IH20Factory, IH20Stablecoin, IPolicyRegistry,
     };
     use std::collections::BTreeSet;
 
@@ -291,12 +291,12 @@ mod tests {
 
     #[test]
     fn handwritten_dynamic_abi_matches_the_pinned_interfaces() {
-        assert_matches_interfaces::<IB20Factory::IB20FactoryCalls, IB20Factory::IB20FactoryErrors>(
+        assert_matches_interfaces::<IH20Factory::IH20FactoryCalls, IH20Factory::IH20FactoryErrors>(
             FACTORY_ABI,
         );
-        assert_events_match::<IB20Factory::IB20FactoryEvents>(
+        assert_events_match::<IH20Factory::IH20FactoryEvents>(
             FACTORY_ABI,
-            [event_key::<IB20Factory::B20Created>()],
+            [event_key::<IH20Factory::H20Created>()],
         );
         assert_matches_interfaces::<
             IActivationRegistry::IActivationRegistryCalls,
@@ -323,44 +323,44 @@ mod tests {
                 event_key::<IPolicyRegistry::BlocklistUpdated>(),
             ],
         );
-        assert_matches_interfaces::<IB20::IB20Calls, IB20::IB20Errors>(COMMON_ABI);
-        assert_events_match::<IB20::IB20Events>(
+        assert_matches_interfaces::<IH20::IH20Calls, IH20::IH20Errors>(COMMON_ABI);
+        assert_events_match::<IH20::IH20Events>(
             COMMON_ABI,
             [
-                event_key::<IB20::Transfer>(),
-                event_key::<IB20::Approval>(),
-                event_key::<IB20::Memo>(),
-                event_key::<IB20::BurnedBlocked>(),
-                event_key::<IB20::RoleGranted>(),
-                event_key::<IB20::RoleRevoked>(),
-                event_key::<IB20::RoleAdminChanged>(),
-                event_key::<IB20::LastAdminRenounced>(),
-                event_key::<IB20::Paused>(),
-                event_key::<IB20::Unpaused>(),
-                event_key::<IB20::PolicyUpdated>(),
-                event_key::<IB20::SupplyCapUpdated>(),
-                event_key::<IB20::ContractURIUpdated>(),
-                event_key::<IB20::NameUpdated>(),
-                event_key::<IB20::SymbolUpdated>(),
-                event_key::<IB20::EIP712DomainChanged>(),
+                event_key::<IH20::Transfer>(),
+                event_key::<IH20::Approval>(),
+                event_key::<IH20::Memo>(),
+                event_key::<IH20::BurnedBlocked>(),
+                event_key::<IH20::RoleGranted>(),
+                event_key::<IH20::RoleRevoked>(),
+                event_key::<IH20::RoleAdminChanged>(),
+                event_key::<IH20::LastAdminRenounced>(),
+                event_key::<IH20::Paused>(),
+                event_key::<IH20::Unpaused>(),
+                event_key::<IH20::PolicyUpdated>(),
+                event_key::<IH20::SupplyCapUpdated>(),
+                event_key::<IH20::ContractURIUpdated>(),
+                event_key::<IH20::NameUpdated>(),
+                event_key::<IH20::SymbolUpdated>(),
+                event_key::<IH20::EIP712DomainChanged>(),
             ],
         );
-        assert_matches_interfaces::<IB20Asset::IB20AssetCalls, IB20Asset::IB20AssetErrors>(
+        assert_matches_interfaces::<IH20Asset::IH20AssetCalls, IH20Asset::IH20AssetErrors>(
             ASSET_ABI,
         );
-        assert_events_match::<IB20Asset::IB20AssetEvents>(
+        assert_events_match::<IH20Asset::IH20AssetEvents>(
             ASSET_ABI,
             [
-                event_key::<IB20Asset::MultiplierUpdated>(),
-                event_key::<IB20Asset::ExtraMetadataUpdated>(),
-                event_key::<IB20Asset::Announcement>(),
-                event_key::<IB20Asset::EndAnnouncement>(),
+                event_key::<IH20Asset::MultiplierUpdated>(),
+                event_key::<IH20Asset::ExtraMetadataUpdated>(),
+                event_key::<IH20Asset::Announcement>(),
+                event_key::<IH20Asset::EndAnnouncement>(),
             ],
         );
         let stablecoin = JsonAbi::parse(STABLECOIN_ABI.iter().copied()).unwrap();
         assert_eq!(
             function_selectors(&stablecoin),
-            interface_selectors::<IB20Stablecoin::IB20StablecoinCalls>()
+            interface_selectors::<IH20Stablecoin::IH20StablecoinCalls>()
         );
         assert!(stablecoin.errors().next().is_none());
     }

@@ -36,7 +36,7 @@ value 被原样复制，不表示 pointer identity。command boundary 之后，�
 `resolve()`、`with_chain_id()` 或构造 `ResolvedNetworkProfile::default()` 都属于 seam 丢失。
 
 该结论保留 `775946811` 已证明的 ownership 与 `a56f34ac1` 的 transport audit 意图，但按
-`v1.7.1-hsk-b20@28ab3ace5` 实际存在的 constructor 重新映射。
+`v1.7.1-hsk-h20@28ab3ace5` 实际存在的 constructor 重新映射。
 
 ## Public type seam
 
@@ -74,15 +74,15 @@ pub struct ResolvedNetworkProfile {
     #[cfg(feature = "hashkey")]
     hashkey: bool,
     #[cfg(feature = "hashkey")]
-    b20_activation_time: Option<u64>,
+    h20_activation_time: Option<u64>,
     #[cfg(feature = "hashkey")]
-    b20_activation_admin: Option<Address>,
+    h20_activation_admin: Option<Address>,
 }
 ```
 
-成对的 B20 fields 有意沿用已审计 seam，而不是存放可由用户自由拼装的 config。
-`B20Config::new(...)` 继续作为 validator 与 projection API。由于 pinned
-`B20Config::new` 不是 `const`，保留两个 fields 还能让 `NetworkConfigs::resolve()` 继续是
+成对的 H20 fields 有意沿用已审计 seam，而不是存放可由用户自由拼装的 config。
+`H20Config::new(...)` 继续作为 validator 与 projection API。由于 pinned
+`H20Config::new` 不是 `const`，保留两个 fields 还能让 `NetworkConfigs::resolve()` 继续是
 `const fn`。
 
 必须提供以下 projections：
@@ -97,7 +97,7 @@ impl ResolvedNetworkProfile {
     #[cfg(feature = "hashkey")]
     pub const fn is_hashkey(self) -> bool;
     #[cfg(feature = "hashkey")]
-    pub fn b20_config(self) -> B20Config;
+    pub fn h20_config(self) -> H20Config;
     pub const fn state_plan(self) -> NetworkStatePlan;
     pub fn base_fee_params(self, timestamp: u64) -> BaseFeeParams;
     pub fn bypass_prevrandao(self, chain_id: u64) -> bool;
@@ -117,7 +117,7 @@ impl ResolvedNetworkProfile {
 }
 ```
 
-这些 projections 是 seam 的一部分，不是后续 B20 implementation detail。否则 Celo、Tempo、
+这些 projections 是 seam 的一部分，不是后续 H20 implementation detail。否则 Celo、Tempo、
 Optimism 的既有 runtime behavior 仍会迫使 caller 在 resolution 后读取 `NetworkConfigs`，破坏
 “resolve once”。`NetworkStatePlan` 只表达 backend/genesis ownership；实际 HashKey seed 仍属于
 后续 runtime ticket，且 fork mode 必须跳过。
@@ -213,13 +213,13 @@ Backend::spawn_with_network_profile(fork, profile, context)
   runtime decision path。
 - generic dispatch 只检查 `profile.is_tempo()` / `profile.is_optimism()`。不存在
   command-local `is_hashkey()` branch；HashKey 与 Optimism 共用 `OpEvmNetwork`。
-- EVM creation 按 creation timestamp 固定 B20 activation snapshot。后续 `vm.warp` 只影响下一次
+- EVM creation 按 creation timestamp 固定 H20 activation snapshot。后续 `vm.warp` 只影响下一次
   EVM construction，不回溯修改已建立的 precompile map。
 - `Backend::replay_until` 是 bare EVM path，必须从 `Backend.network_profile` 注入；inspector
   无法补救该路径。
 - `BackendInner::precompile_addresses()` 也是 bare EVM path。它必须改为接收 profile 与实际
   execution context；root backend 使用 caller 已构造的 `evm_env`，fork 使用 async
-  `create_fork` 返回的 fork env。不能用 default timestamp/chain ID 生成 B20 warm-address set。
+  `create_fork` 返回的 fork env。不能用 default timestamp/chain ID 生成 H20 warm-address set。
 - `CreateFork` 是 initial fork、multi-fork、fork roll 与 cheatcode fork creation 的 canonical
   carrier。profile 不参与 `ForkId` cache identity；URL 与 block 继续承担该职责。
 - Anvil 使用独立 backend type，但遵守相同 ownership：一个 profile field 同时服务 normal、
@@ -242,7 +242,7 @@ boundary。
 transport tests 必须经 public seams 观察行为，并将独立选择的 literal profile 与 destination
 观察到的 profile 比较：
 
-- `foundry-evm-networks`：HashKey resolve 为 Optimism family + enabled B20 config；Ethereum、
+- `foundry-evm-networks`：HashKey resolve 为 Optimism family + enabled H20 config；Ethereum、
   Optimism、Tempo、Celo 保持 v1.7.1 behavior。
 - `InspectorStack`：builder、owned stack、mutable view、nested EVM、isolation 观察到 equal
   profile。

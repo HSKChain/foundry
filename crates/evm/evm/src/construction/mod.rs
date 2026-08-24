@@ -635,7 +635,7 @@ mod tests {
     }
 
     #[cfg(feature = "hashkey")]
-    const B20_FACTORY: Address = address!("B20F000000000000000000000000000000000000");
+    const H20_FACTORY: Address = address!("0177FF0000000000000000000000000000000000");
 
     #[tokio::test]
     async fn rejects_profile_family_mismatch_before_preparation() {
@@ -702,11 +702,11 @@ mod tests {
             .construct(ExecutorConfig::default().enable_isolation(true))
             .unwrap();
 
-        let trace = CallTrace { address: B20_FACTORY, ..Default::default() };
+        let trace = CallTrace { address: H20_FACTORY, ..Default::default() };
         let normal_decoded = normal.decode_function(&trace).await;
         let traced_decoded = traced.decode_function(&trace).await;
         let isolated_decoded = isolated.decode_function(&trace).await;
-        assert_eq!(normal_decoded.label.as_deref(), Some("B20Factory"));
+        assert_eq!(normal_decoded.label.as_deref(), Some("H20Factory"));
         assert_eq!(normal_decoded, traced_decoded);
         assert_eq!(normal_decoded, isolated_decoded);
         assert_eq!((normal.chain_id(), normal.timestamp()), (177, 0));
@@ -726,9 +726,9 @@ mod tests {
             EvmConstruction::prepare::<OpEvmNetwork>(&resolved, &Config::default()).await.unwrap();
         let state = prepared.reusable_state();
         let before = prepared.construct(ExecutorConfig::default()).unwrap();
-        let trace = CallTrace { address: B20_FACTORY, ..Default::default() };
+        let trace = CallTrace { address: H20_FACTORY, ..Default::default() };
         assert_eq!(before.timestamp(), 0);
-        assert_eq!(before.decode_function(&trace).await.label.as_deref(), Some("B20Factory"));
+        assert_eq!(before.decode_function(&trace).await.label.as_deref(), Some("H20Factory"));
 
         evm_opts.env.block_timestamp = revm::primitives::U256::from(1);
         let resolved = resolve(evm_opts);
@@ -739,6 +739,6 @@ mod tests {
             .unwrap();
 
         assert_eq!(after.timestamp(), 1);
-        assert_eq!(after.decode_function(&trace).await.label.as_deref(), Some("B20Factory"));
+        assert_eq!(after.decode_function(&trace).await.label.as_deref(), Some("H20Factory"));
     }
 }

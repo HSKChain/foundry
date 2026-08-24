@@ -53,7 +53,7 @@ tracing.workspace = true
 yansi.workspace = true
 
 [dev-dependencies]
-hsk-b20-precompiles = { workspace = true, features = ["std"] }
+hsk-h20-precompiles = { workspace = true, features = ["std"] }
 
 [features]
 hashkey = ["foundry-evm-networks/hashkey"]

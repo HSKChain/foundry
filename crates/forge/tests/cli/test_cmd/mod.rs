@@ -56,7 +56,7 @@ forgetest!(testdata, |_prj, cmd| {
     } else {
         args.push(&nmc_default);
     }
-    // The hashkey fixtures under `default/hashkey` exercise the HashKey B20 network
+    // The hashkey fixtures under `default/hashkey` exercise the HashKey H20 network
     // profile (factory + precompiles), which is not active in the generic testdata
     // run. They are covered by the dedicated `hashkey::` CLI tests, which embed the
     // same fixtures into a `network = "hashkey"` project.

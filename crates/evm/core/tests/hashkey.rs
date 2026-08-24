@@ -9,9 +9,9 @@ use foundry_evm_core::{
     backend::{Backend, construction as backend_construction},
     evm::{FoundryEvmFactory, OpEvmNetwork},
 };
-use foundry_evm_networks::{HSK_B20_LOCAL_ADMIN, NetworkConfigs, ResolvedNetworkProfile};
-use hsk_b20_precompiles::{
-    ActivationFeature, B20Variant, IActivationRegistry, IB20, IB20Factory, IB20Stablecoin,
+use foundry_evm_networks::{HSK_H20_LOCAL_ADMIN, NetworkConfigs, ResolvedNetworkProfile};
+use hsk_h20_precompiles::{
+    ActivationFeature, H20Variant, IActivationRegistry, IH20, IH20Factory, IH20Stablecoin,
     IPolicyRegistry,
 };
 use op_revm::OpTransaction;
@@ -27,21 +27,21 @@ use std::sync::{
 
 const CHAIN_ID: u64 = 177;
 const CALLER: Address = address!("1111111111111111111111111111111111111111");
-const B20_FACTORY: Address = address!("B20F000000000000000000000000000000000000");
-const B20_ACTIVATION_REGISTRY: Address = address!("8453000000000000000000000000000000000001");
-const B20_POLICY_REGISTRY: Address = address!("8453000000000000000000000000000000000002");
+const H20_FACTORY: Address = address!("0177FF0000000000000000000000000000000000");
+const H20_ACTIVATION_REGISTRY: Address = address!("0177FF0000000000000000000000000000000001");
+const H20_POLICY_REGISTRY: Address = address!("0177FF0000000000000000000000000000000002");
 const POLICY_FEATURE_SLOT: U256 = alloy_primitives::uint!(
     0x8c5327ddcca092db72284503162323c6e8d392394b1d5c71991227bbc26f7c07_U256
 );
-const ASSET: Address = address!("b20000000000000000000066c4330a000f141455");
-const STABLECOIN: Address = address!("b20000000000000000000166ab25bbf43b4010ce");
+const ASSET: Address = address!("017700000000000000000066c4330a000f141455");
+const STABLECOIN: Address = address!("017700000000000000000166ab25bbf43b4010ce");
 const MARKER_CODE_HASH: B256 =
     b256!("309b8896ee4c1ff7ec1966155373dee42663b6b40c3fedc70ba501684848d2a3");
 const EMPTY_OBSERVABLE_HASH: B256 =
     b256!("011b4d03dd8c01f1049143cf9c4c817e4b167f1d1b83e5c6f0f10d89ba1e7bce");
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum B20Scenario {
+enum H20Scenario {
     CreateAsset,
     ReadAsset,
     CreateStablecoin,
@@ -66,7 +66,7 @@ struct ConformanceRun {
 
 #[derive(Debug, PartialEq, Eq)]
 struct ScenarioObservable {
-    scenario: B20Scenario,
+    scenario: H20Scenario,
     status: OutcomeStatus,
     output: Bytes,
     gas_used: u64,
@@ -140,8 +140,8 @@ fn tx(nonce: u64, target: Address, data: Vec<u8>) -> OpTx {
     )
 }
 
-fn scenario_transactions() -> Vec<(B20Scenario, OpTx)> {
-    let asset_params = IB20Factory::B20AssetCreateParams {
+fn scenario_transactions() -> Vec<(H20Scenario, OpTx)> {
+    let asset_params = IH20Factory::H20AssetCreateParams {
         version: 1,
         name: "Conformance Asset".to_string(),
         symbol: "CFA".to_string(),
@@ -149,7 +149,7 @@ fn scenario_transactions() -> Vec<(B20Scenario, OpTx)> {
         decimals: 18,
     }
     .abi_encode();
-    let stablecoin_params = IB20Factory::B20StablecoinCreateParams {
+    let stablecoin_params = IH20Factory::H20StablecoinCreateParams {
         version: 1,
         name: "Conformance Dollar".to_string(),
         symbol: "CFD".to_string(),
@@ -160,12 +160,12 @@ fn scenario_transactions() -> Vec<(B20Scenario, OpTx)> {
 
     vec![
         (
-            B20Scenario::CreateAsset,
+            H20Scenario::CreateAsset,
             tx(
                 0,
-                B20_FACTORY,
-                IB20Factory::createB20Call {
-                    variant: IB20Factory::B20Variant::ASSET,
+                H20_FACTORY,
+                IH20Factory::createH20Call {
+                    variant: IH20Factory::H20Variant::ASSET,
                     salt: B256::from(U256::from(0xa1)),
                     params: asset_params.clone().into(),
                     initCalls: Vec::new(),
@@ -173,14 +173,14 @@ fn scenario_transactions() -> Vec<(B20Scenario, OpTx)> {
                 .abi_encode(),
             ),
         ),
-        (B20Scenario::ReadAsset, tx(1, ASSET, IB20::nameCall {}.abi_encode())),
+        (H20Scenario::ReadAsset, tx(1, ASSET, IH20::nameCall {}.abi_encode())),
         (
-            B20Scenario::CreateStablecoin,
+            H20Scenario::CreateStablecoin,
             tx(
                 2,
-                B20_FACTORY,
-                IB20Factory::createB20Call {
-                    variant: IB20Factory::B20Variant::STABLECOIN,
+                H20_FACTORY,
+                IH20Factory::createH20Call {
+                    variant: IH20Factory::H20Variant::STABLECOIN,
                     salt: B256::from(U256::from(0xb2)),
                     params: stablecoin_params.into(),
                     initCalls: Vec::new(),
@@ -189,14 +189,14 @@ fn scenario_transactions() -> Vec<(B20Scenario, OpTx)> {
             ),
         ),
         (
-            B20Scenario::ReadStablecoin,
-            tx(3, STABLECOIN, IB20Stablecoin::currencyCall {}.abi_encode()),
+            H20Scenario::ReadStablecoin,
+            tx(3, STABLECOIN, IH20Stablecoin::currencyCall {}.abi_encode()),
         ),
         (
-            B20Scenario::CreatePolicy,
+            H20Scenario::CreatePolicy,
             tx(
                 4,
-                B20_POLICY_REGISTRY,
+                H20_POLICY_REGISTRY,
                 IPolicyRegistry::createPolicyCall {
                     admin: CALLER,
                     policyType: IPolicyRegistry::PolicyType::BLOCKLIST,
@@ -205,21 +205,21 @@ fn scenario_transactions() -> Vec<(B20Scenario, OpTx)> {
             ),
         ),
         (
-            B20Scenario::ReadActivation,
+            H20Scenario::ReadActivation,
             tx(
                 5,
-                B20_ACTIVATION_REGISTRY,
-                IActivationRegistry::isActivatedCall { feature: ActivationFeature::B20Asset.id() }
+                H20_ACTIVATION_REGISTRY,
+                IActivationRegistry::isActivatedCall { feature: ActivationFeature::H20Asset.id() }
                     .abi_encode(),
             ),
         ),
         (
-            B20Scenario::DuplicateAsset,
+            H20Scenario::DuplicateAsset,
             tx(
                 6,
-                B20_FACTORY,
-                IB20Factory::createB20Call {
-                    variant: IB20Factory::B20Variant::ASSET,
+                H20_FACTORY,
+                IH20Factory::createH20Call {
+                    variant: IH20Factory::H20Variant::ASSET,
                     salt: B256::from(U256::from(0xa1)),
                     params: asset_params.into(),
                     initCalls: Vec::new(),
@@ -280,17 +280,17 @@ fn hash_logs(result: &ExecutionResult<op_revm::OpHaltReason>) -> B256 {
     keccak256(encoded)
 }
 
-fn is_b20_address(address: Address) -> bool {
-    matches!(address, B20_FACTORY | B20_ACTIVATION_REGISTRY | B20_POLICY_REGISTRY)
-        || B20Variant::from_address(address).is_some()
+fn is_h20_address(address: Address) -> bool {
+    matches!(address, H20_FACTORY | H20_ACTIVATION_REGISTRY | H20_POLICY_REGISTRY)
+        || H20Variant::from_address(address).is_some()
 }
 
 fn hash_storage_diff(state: &EvmState) -> B256 {
-    // Normalize B20-only changes by address and slot, excluding journal-local access metadata.
+    // Normalize H20-only changes by address and slot, excluding journal-local access metadata.
     let mut accounts: Vec<_> = state
         .iter()
         .filter(|(address, account)| {
-            is_b20_address(**address) && account.storage.values().any(|slot| slot.is_changed())
+            is_h20_address(**address) && account.storage.values().any(|slot| slot.is_changed())
         })
         .collect();
     accounts.sort_by_key(|(address, _)| **address);
@@ -335,39 +335,39 @@ fn observables(run: &ConformanceRun) -> Vec<ScenarioObservable> {
 fn expected_observables() -> Vec<ScenarioObservable> {
     vec![
         ScenarioObservable {
-            scenario: B20Scenario::CreateAsset,
+            scenario: H20Scenario::CreateAsset,
             status: OutcomeStatus::Success,
-            output: IB20Factory::createB20Call::abi_encode_returns(&ASSET).into(),
+            output: IH20Factory::createH20Call::abi_encode_returns(&ASSET).into(),
             gas_used: 201_307,
             logs_hash: b256!("61801e78c694a6308601b0b1424329c4384d34e694983c23d60296c6e963e112"),
             storage_hash: b256!("a9df31b03eb9789b6c15c920f8b340cec4a20dd9ce1fbf85bb93655fc26cbccc"),
         },
         ScenarioObservable {
-            scenario: B20Scenario::ReadAsset,
+            scenario: H20Scenario::ReadAsset,
             status: OutcomeStatus::Success,
-            output: IB20::nameCall::abi_encode_returns(&"Conformance Asset".to_string()).into(),
+            output: IH20::nameCall::abi_encode_returns(&"Conformance Asset".to_string()).into(),
             gas_used: 23_270,
             logs_hash: EMPTY_OBSERVABLE_HASH,
             storage_hash: EMPTY_OBSERVABLE_HASH,
         },
         ScenarioObservable {
-            scenario: B20Scenario::CreateStablecoin,
+            scenario: H20Scenario::CreateStablecoin,
             status: OutcomeStatus::Success,
-            output: IB20Factory::createB20Call::abi_encode_returns(&STABLECOIN).into(),
+            output: IH20Factory::createH20Call::abi_encode_returns(&STABLECOIN).into(),
             gas_used: 200_739,
             logs_hash: b256!("0d90cefad92c964660f7f3e8257b91b28b8b5c01d327070ba956403ac502d387"),
             storage_hash: b256!("7b509e94998e59e33f5330d645305d1ff56324b4cf520eb7777ceab066d595ab"),
         },
         ScenarioObservable {
-            scenario: B20Scenario::ReadStablecoin,
+            scenario: H20Scenario::ReadStablecoin,
             status: OutcomeStatus::Success,
-            output: IB20Stablecoin::currencyCall::abi_encode_returns(&"USD".to_string()).into(),
+            output: IH20Stablecoin::currencyCall::abi_encode_returns(&"USD".to_string()).into(),
             gas_used: 23_270,
             logs_hash: EMPTY_OBSERVABLE_HASH,
             storage_hash: EMPTY_OBSERVABLE_HASH,
         },
         ScenarioObservable {
-            scenario: B20Scenario::CreatePolicy,
+            scenario: H20Scenario::CreatePolicy,
             status: OutcomeStatus::Success,
             output: IPolicyRegistry::createPolicyCall::abi_encode_returns(&2).into(),
             gas_used: 116_009,
@@ -375,7 +375,7 @@ fn expected_observables() -> Vec<ScenarioObservable> {
             storage_hash: b256!("b43ace4a78cd6bd43205329fde70524b6facb1855849a2c65363b6391a6a300e"),
         },
         ScenarioObservable {
-            scenario: B20Scenario::ReadActivation,
+            scenario: H20Scenario::ReadActivation,
             status: OutcomeStatus::Success,
             output: IActivationRegistry::isActivatedCall::abi_encode_returns(&true).into(),
             gas_used: 23_688,
@@ -383,9 +383,9 @@ fn expected_observables() -> Vec<ScenarioObservable> {
             storage_hash: EMPTY_OBSERVABLE_HASH,
         },
         ScenarioObservable {
-            scenario: B20Scenario::DuplicateAsset,
+            scenario: H20Scenario::DuplicateAsset,
             status: OutcomeStatus::Revert,
-            output: IB20Factory::TokenAlreadyExists { token: ASSET }.abi_encode().into(),
+            output: IH20Factory::TokenAlreadyExists { token: ASSET }.abi_encode().into(),
             gas_used: 28_592,
             logs_hash: EMPTY_OBSERVABLE_HASH,
             storage_hash: EMPTY_OBSERVABLE_HASH,
@@ -394,7 +394,7 @@ fn expected_observables() -> Vec<ScenarioObservable> {
 }
 
 #[test]
-fn normal_and_inspected_b20_scenarios_are_observably_identical() {
+fn normal_and_inspected_h20_scenarios_are_observably_identical() {
     let profile = NetworkConfigs::with_hashkey().resolve();
     let normal = execute(ProfileInspector { profile });
     let inspected_calls = Arc::new(AtomicUsize::new(0));
@@ -405,7 +405,7 @@ fn normal_and_inspected_b20_scenarios_are_observably_identical() {
     assert_eq!(observables(&normal), expected_observables());
 
     let asset_output = normal.results[0].output().unwrap();
-    assert_eq!(IB20Factory::createB20Call::abi_decode_returns(asset_output).unwrap(), ASSET);
+    assert_eq!(IH20Factory::createH20Call::abi_decode_returns(asset_output).unwrap(), ASSET);
     assert!(normal.results[0].is_success());
     assert!(!normal.results[0].logs().is_empty());
     let asset_diff = normal.state_diffs[0].get(&ASSET).expect("asset creation state diff");
@@ -414,16 +414,16 @@ fn normal_and_inspected_b20_scenarios_are_observably_identical() {
     assert!(!asset_diff.storage.is_empty());
 
     assert_eq!(
-        IB20::nameCall::abi_decode_returns(normal.results[1].output().unwrap()).unwrap(),
+        IH20::nameCall::abi_decode_returns(normal.results[1].output().unwrap()).unwrap(),
         "Conformance Asset"
     );
     assert_eq!(
-        IB20Factory::createB20Call::abi_decode_returns(normal.results[2].output().unwrap())
+        IH20Factory::createH20Call::abi_decode_returns(normal.results[2].output().unwrap())
             .unwrap(),
         STABLECOIN
     );
     assert_eq!(
-        IB20Stablecoin::currencyCall::abi_decode_returns(normal.results[3].output().unwrap())
+        IH20Stablecoin::currencyCall::abi_decode_returns(normal.results[3].output().unwrap())
             .unwrap(),
         "USD"
     );
@@ -439,16 +439,16 @@ fn normal_and_inspected_b20_scenarios_are_observably_identical() {
         .unwrap()
     );
     assert_eq!(keccak256([0xef]), MARKER_CODE_HASH);
-    assert_eq!(profile.b20_config().activation_admin(), Some(HSK_B20_LOCAL_ADMIN));
+    assert_eq!(profile.h20_config().activation_admin(), Some(HSK_H20_LOCAL_ADMIN));
 }
 
 #[test]
 fn activation_snapshot_survives_warp_and_refreshes_on_later_evm_creation() {
     let config =
-        hsk_b20_config::B20Config::new(Some(100), Some(Address::repeat_byte(0x11))).unwrap();
-    let profile = NetworkConfigs::with_hashkey().resolve().with_b20_config_for_test(config);
+        hsk_h20_config::H20Config::new(Some(100), Some(Address::repeat_byte(0x11))).unwrap();
+    let profile = NetworkConfigs::with_hashkey().resolve().with_h20_config_for_test(config);
     let mut backend = backend(profile);
-    let activation_registry = B20_ACTIVATION_REGISTRY;
+    let activation_registry = H20_ACTIVATION_REGISTRY;
     let feature_slot = POLICY_FEATURE_SLOT;
     backend.insert_account_storage(activation_registry, feature_slot, U256::ZERO).unwrap();
 
@@ -457,10 +457,10 @@ fn activation_snapshot_survives_warp_and_refreshes_on_later_evm_creation() {
         evm_env(99),
         ProfileInspector { profile },
     );
-    assert!(created_at_99.precompiles().get(&B20_FACTORY).is_none());
+    assert!(created_at_99.precompiles().get(&H20_FACTORY).is_none());
     created_at_99.ctx_mut().block_mut().set_timestamp(U256::from(100));
     assert_eq!(created_at_99.ctx().block.timestamp, U256::from(100));
-    assert!(created_at_99.precompiles().get(&B20_FACTORY).is_none());
+    assert!(created_at_99.precompiles().get(&H20_FACTORY).is_none());
     drop(created_at_99);
 
     for timestamp in [100, 101] {
@@ -469,7 +469,7 @@ fn activation_snapshot_survives_warp_and_refreshes_on_later_evm_creation() {
             evm_env(timestamp),
             ProfileInspector { profile },
         );
-        assert!(later_evm.precompiles().get(&B20_FACTORY).is_some(), "timestamp {timestamp}");
+        assert!(later_evm.precompiles().get(&H20_FACTORY).is_some(), "timestamp {timestamp}");
         drop(later_evm);
     }
     assert_eq!(backend.storage_ref(activation_registry, feature_slot).unwrap(), U256::ZERO);

@@ -4,7 +4,7 @@ permissions: {}
 
 on:
   push:
-    branches: [v1.7.1-hsk-b20]
+    branches: [v1.7.1-hsk-h20]
   pull_request:
   workflow_dispatch:
 
@@ -36,5 +36,5 @@ jobs:
           toolchain: stable
       - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-      - name: Run HashKey B20 source evidence gate
+      - name: Run HashKey H20 source evidence gate
         run: ./.github/scripts/hashkey-release-gate.sh source

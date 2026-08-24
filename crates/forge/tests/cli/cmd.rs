@@ -994,11 +994,11 @@ forgetest!(network_profile_transport_default_and_hashkey, |prj, cmd| {
         "ProfileTransport.t.sol",
         r#"
 contract ProfileTransportTest {
-    address constant B20_FACTORY = 0xB20f000000000000000000000000000000000000;
+    address constant H20_FACTORY = 0x0177FF0000000000000000000000000000000000;
 
-    function testDefaultEthereumDoesNotInstallB20() external view {
-        (bool ok,) = B20_FACTORY.staticcall("");
-        require(ok, "unexpected B20 precompile");
+    function testDefaultEthereumDoesNotInstallH20() external view {
+        (bool ok,) = H20_FACTORY.staticcall("");
+        require(ok, "unexpected H20 precompile");
     }
 }
 "#,
@@ -1009,11 +1009,11 @@ contract ProfileTransportTest {
         "ProfileTransport.t.sol",
         r#"
 contract ProfileTransportTest {
-    address constant B20_FACTORY = 0xB20f000000000000000000000000000000000000;
+    address constant H20_FACTORY = 0x0177FF0000000000000000000000000000000000;
 
-    function testHashKeyInstallsB20() external view {
-        (bool ok,) = B20_FACTORY.staticcall("");
-        require(!ok, "missing B20 precompile");
+    function testHashKeyInstallsH20() external view {
+        (bool ok,) = H20_FACTORY.staticcall("");
+        require(!ok, "missing H20 precompile");
     }
 }
 "#,

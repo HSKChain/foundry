@@ -65,7 +65,7 @@ tokio.workspace = true
 
 [dev-dependencies]
 foundry-evm-networks = { workspace = true, features = ["test-utils"] }
-hsk-b20-config.workspace = true
+hsk-h20-config.workspace = true
 
 [features]
 hashkey = [

@@ -65,7 +65,7 @@ test: ## Run all tests.
 	$(MAKE) test-doc
 
 .PHONY: hashkey-gate
-hashkey-gate: ## Run the complete HashKey B20 source evidence gate.
+hashkey-gate: ## Run the complete HashKey H20 source evidence gate.
 	./.github/scripts/hashkey-release-gate.sh source
 
 ##@ Linting

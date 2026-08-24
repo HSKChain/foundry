@@ -1,4 +1,4 @@
-//! Cast end-to-end coverage for the HashKey B20 Anvil profile.
+//! Cast end-to-end coverage for the HashKey H20 Anvil profile.
 
 use alloy_primitives::{Address, B256, Bytes, U256, address, hex, keccak256};
 use alloy_sol_types::{SolCall, SolValue, sol};
@@ -11,12 +11,12 @@ const CREATOR: Address = address!("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
 const RECIPIENT: Address = address!("0x70997970C51812dc3A010C7d01b50e0d17dc79C8");
 const CREATOR_PRIVATE_KEY: &str =
     "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
-const B20_ASSET_FEATURE_SLOT: U256 = alloy_primitives::uint!(
-    0x819420403a306232adb8ee78d9f35b5090371155b34376cf9b020e30029278e5_U256
+const H20_ASSET_FEATURE_SLOT: U256 = alloy_primitives::uint!(
+    0x7bbefaa09825c91a707f8f01422fffff1ab80d1a560229cbf4820368ff7f9576_U256
 );
 
 sol! {
-    struct B20AssetCreateParams {
+    struct H20AssetCreateParams {
         uint8 version;
         string name;
         string symbol;
@@ -24,11 +24,11 @@ sol! {
         uint8 decimals;
     }
 
-    interface IB20Factory {
-        function createB20(uint8 variant, bytes32 salt, bytes params, bytes[] initCalls)
+    interface IH20Factory {
+        function createH20(uint8 variant, bytes32 salt, bytes params, bytes[] initCalls)
             external
             returns (address token);
-        function getB20Address(uint8 variant, address sender, bytes32 salt)
+        function getH20Address(uint8 variant, address sender, bytes32 salt)
             external
             view
             returns (address token);
@@ -49,7 +49,7 @@ fn wait_for_receipt(cmd: &mut foundry_test_utils::TestCommand, tx_hash: &str, rp
     cmd.cast_fuse().args(["receipt", tx_hash, "--rpc-url", rpc]).assert_success();
 }
 
-casttest!(hashkey_b20_anvil_cast_workflow, async |prj, cmd| {
+casttest!(hashkey_h20_anvil_cast_workflow, async |prj, cmd| {
     prj.create_file(
         "foundry.toml",
         r#"
@@ -59,13 +59,13 @@ network = "hashkey"
     );
     cmd.set_current_dir(prj.root());
 
-    let factory = NetworkTraceIdentity::B20Factory.fixed_address().unwrap().to_string();
+    let factory = NetworkTraceIdentity::H20Factory.fixed_address().unwrap().to_string();
     let activation_registry =
-        NetworkTraceIdentity::B20ActivationRegistry.fixed_address().unwrap().to_string();
+        NetworkTraceIdentity::H20ActivationRegistry.fixed_address().unwrap().to_string();
     let policy_registry =
-        NetworkTraceIdentity::B20PolicyRegistry.fixed_address().unwrap().to_string();
-    let asset_feature = keccak256("base.b20_asset").to_string();
-    let asset_feature_slot = format!("{:#x}", B20_ASSET_FEATURE_SLOT);
+        NetworkTraceIdentity::H20PolicyRegistry.fixed_address().unwrap().to_string();
+    let asset_feature = keccak256("hsk.h20_asset").to_string();
+    let asset_feature_slot = format!("{:#x}", H20_ASSET_FEATURE_SLOT);
     let recipient = RECIPIENT.to_string();
     let admin = DEVELOPMENT_ADMIN.to_string();
     let creator = CREATOR.to_string();
@@ -83,7 +83,7 @@ network = "hashkey"
     let snapshot = "0x0";
 
     let predict_data =
-        IB20Factory::getB20AddressCall { variant: 0, sender: CREATOR, salt: salt.parse().unwrap() }
+        IH20Factory::getH20AddressCall { variant: 0, sender: CREATOR, salt: salt.parse().unwrap() }
             .abi_encode();
     let predicted_output = stdout(
         &mut cmd,
@@ -113,7 +113,7 @@ network = "hashkey"
 [true]
 "#]]);
 
-    let params = B20AssetCreateParams {
+    let params = H20AssetCreateParams {
         version: 1,
         name: "Cast Asset".to_string(),
         symbol: "CAST".to_string(),
@@ -121,7 +121,7 @@ network = "hashkey"
         decimals: 18,
     }
     .abi_encode();
-    let create_data = IB20Factory::createB20Call {
+    let create_data = IH20Factory::createH20Call {
         variant: 0,
         salt: salt.parse().unwrap(),
         params: Bytes::from(params),
@@ -207,7 +207,7 @@ network = "hashkey"
         .assert_success()
         .stdout_eq(str![[r#"
 Traces:
-  [..] B20Asset::balanceOf([..])
+  [..] H20Asset::balanceOf([..])
     └─ ← [Return] 42
 
 
@@ -222,7 +222,7 @@ Transaction successfully executed.
         .stdout_eq(str![[r#"
 Executing previous transactions from the block.
 Traces:
-  [..] B20Asset::mint([..], 42)
+  [..] H20Asset::mint([..], 42)
     ├─ emit Transfer(from: 0x0000000000000000000000000000000000000000, to: [..], amount: 42)
     └─ ← [Return]
 
@@ -248,7 +248,7 @@ Transaction successfully executed.
         .assert_success()
         .stdout_eq(str![[r#"
 Traces:
-  [4318] B20Asset::mint(0x70997970C51812dc3A010C7d01b50e0d17dc79C8, 1)
+  [4318] H20Asset::mint(0x70997970C51812dc3A010C7d01b50e0d17dc79C8, 1)
     └─ ← [Revert] AccessControlUnauthorizedAccount(0x70997970C51812dc3A010C7d01b50e0d17dc79C8, 0x154c00819833dac601ee5ddded6fda79d9d8b506b911b3dbd54cdb95fe6c3686)
 
 

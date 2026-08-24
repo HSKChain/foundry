@@ -1,7 +1,7 @@
-# HashKey B20 configuration reference
+# HashKey H20 configuration reference
 
-The `hashkey` network selector enables the opt-in HashKey B20 standalone-local profile. It resolves
-to the Optimism EVM family plus the Beryl B20 v1 native precompiles.
+The `hashkey` network selector enables the opt-in HashKey H20 standalone-local profile. It resolves
+to the Optimism EVM family plus the Beryl H20 v1 native precompiles.
 
 ## Build capability
 
@@ -18,7 +18,7 @@ Cargo keeps the standard target names. To build the checkout with the feature an
 namespaced commands, run `hsk-foundryup --path "$PWD"` from the repository root.
 
 A binary built without this feature rejects `hashkey` as an unknown `--network` value. Enabling the
-feature only adds the capability; it does not activate B20 unless the runtime selector is also set.
+feature only adds the capability; it does not activate H20 unless the runtime selector is also set.
 
 ## Setting
 
@@ -51,7 +51,7 @@ network = "hashkey"
 1. An explicitly supplied `--network` value overrides `foundry.toml` for that command.
 2. Otherwise, `network` is loaded from the selected Foundry profile.
 3. Without either selector, normal Ethereum or chain-derived behavior applies. A chain ID never
-   implicitly enables HashKey B20; HashKey selection is always explicit.
+   implicitly enables HashKey H20; HashKey selection is always explicit.
 
 `--network` conflicts with the legacy `--optimism`, `--tempo`, and `--celo` flags. The canonical
 serialized configuration is always `network = "..."`.
@@ -59,13 +59,13 @@ serialized configuration is always `network = "..."`.
 When selected, `hashkey` resolves once to an immutable runtime profile with:
 
 - Optimism EVM execution semantics.
-- B20 activation time `0`, active inclusively at every standalone-local timestamp.
+- H20 activation time `0`, active inclusively at every standalone-local timestamp.
 - Development activation admin `0xCB00000000000000000000000000000000000000`.
-- `B20Asset`, `B20Stablecoin`, and `PolicyRegistry` active in fresh standalone state.
+- `H20Asset`, `H20Stablecoin`, and `PolicyRegistry` active in fresh standalone state.
 - Marker bytecode `0xef` on the Factory, ActivationRegistry, and PolicyRegistry singleton accounts.
 
 These values are deterministic development fixtures, not HashKey mainnet or testnet parameters.
 They are seeded only for fresh standalone state. `--fork-url` preserves remote code and storage and
-does not apply the local B20 seed, so no production or historical-fidelity guarantee is implied.
+does not apply the local H20 seed, so no production or historical-fidelity guarantee is implied.
 
-See [HashKey B20 local simulation](./hashkey-b20.md) for workflows and the complete support boundary.
+See [HashKey H20 local simulation](./hashkey-h20.md) for workflows and the complete support boundary.

@@ -1,9 +1,9 @@
 # v1.7.1 EVM construction deep module 规范
 
-> 状态：architecture contract 已由 issues #45-#52 在 `v1.7.1-hsk-b20` 实现；opaque
+> 状态：architecture contract 已由 issues #45-#52 在 `v1.7.1-hsk-h20` 实现；opaque
 > `ResolvedEvmOpts` handoff 由 command profile resolution seam 提供。
 >
-> 适用分支：`v1.7.1-hsk-b20`。
+> 适用分支：`v1.7.1-hsk-h20`。
 >
 > 本文深化 `ResolvedNetworkProfile` transport seam。它取代
 > [`resolved-network-profile-v1.7.1.md`](./resolved-network-profile-v1.7.1.md) 中由 caller 显式调用
@@ -19,7 +19,7 @@
 
 Foundry 应在每次 EVM creation point 建立一个 deep construction module。command/session 继续只
 resolve 一次 immutable `ResolvedNetworkProfile`；construction module 根据该 profile 与当前
-`EvmEnv` 唯一派生本次 execution 的 `NetworkExecutionContext` 和 B20 activation snapshot，并将
+`EvmEnv` 唯一派生本次 execution 的 `NetworkExecutionContext` 和 H20 activation snapshot，并将
 同一 snapshot 原子投影到 backend、inspector、normal/traced execution、nested/isolation execution
 与 trace decoder。
 
@@ -94,7 +94,7 @@ backend/inspector profile mismatch。这证明当前 interface 允许 caller 先
 
 - 不改变 `NetworkConfigs::resolve()` 的 command/session ownership。
 - 不新增 TOML、environment variable 或 CLI network setting。
-- 不改变 HashKey B20 semantic baseline、binding pin、activation schedule 或 precompile implementation。
+- 不改变 HashKey H20 semantic baseline、binding pin、activation schedule 或 precompile implementation。
 - 不把 standalone local genesis seed 移到每次 EVM creation；seed 仍只发生在 backend/genesis
   establishment，RPC fork 仍不得 seed 或覆盖远端状态。
 - 不改变 fork cache identity、fork block pinning 或 state snapshot/revert semantics。
@@ -117,7 +117,7 @@ construction module 必须区分三个生命周期，不能把它们合并成一
 ### 5.2 Reusable execution state
 
 backend、fork database、journaled state 与 caller session cache 可以跨多次 EVM creation 复用。它们
-承载 state lifecycle，但不拥有一个可无限复用的 B20 activation snapshot。
+承载 state lifecycle，但不拥有一个可无限复用的 H20 activation snapshot。
 
 standalone local state plan 在 backend/genesis establishment 时执行一次。fork backend 保留远端状态，
 不得因为后续 EVM creation 或 profile projection 重播 local seed。
@@ -133,10 +133,10 @@ NetworkExecutionContext::new(
 )
 ```
 
-该 context 与其 B20 activation snapshot 在本次 constructed EVM 内固定：
+该 context 与其 H20 activation snapshot 在本次 constructed EVM 内固定：
 
-- timestamp `< activation_time` 时不安装 B20 precompiles；
-- timestamp `>= activation_time` 时安装 B20 precompiles；
+- timestamp `< activation_time` 时不安装 H20 precompiles；
+- timestamp `>= activation_time` 时安装 H20 precompiles；
 - 同一 EVM 内 `vm.warp` 不追溯改变已经创建的 precompile map；
 - 下一次 EVM creation 根据新的 `EvmEnv` 重新派生 snapshot；
 - nested/isolation execution 继承 parent construction snapshot，不重新 resolve 或 default；
@@ -259,7 +259,7 @@ context，说明 construction seam 被穿透，implementation 不满足本规范
 
 ## 9. Compatibility 与 deletion contract
 
-在 `v1.7.1-hsk-b20` 上采用 hard cutover。所有 workspace caller 必须迁移到 canonical interface，
+在 `v1.7.1-hsk-h20` 上采用 hard cutover。所有 workspace caller 必须迁移到 canonical interface，
 不保留并行的 resolved-profile construction path。
 
 应删除或降为 module-private implementation detail 的 branch-added interface 包括：
@@ -290,7 +290,7 @@ wrapper：这些 interface 尚未构成 v1.7.1 已发布 contract，过渡期只
 - `--json` schema 与字段不变；
 - exit code 不变；
 - trace labels、decoded calldata、returns、events 与 custom errors 不变；
-- B20 precompile availability、gas、logs 与 state transition 不变；
+- H20 precompile availability、gas、logs 与 state transition 不变；
 - activation timestamp `99/100/101` edge behavior 不变；
 - normal/traced execution semantic equivalence 不变；
 - 正常路径不新增 banner、warning 或 status prose。
@@ -331,7 +331,7 @@ private snapshot fields。
 ### 11.3 Fork、state 与 isolation
 
 - standalone local genesis seed 只执行一次；
-- fork creation、roll、replay 与 Anvil reset 不 seed 或覆盖远端 B20 state；
+- fork creation、roll、replay 与 Anvil reset 不 seed 或覆盖远端 H20 state；
 - reusable backend state 不携带 stale activation snapshot；
 - nested/isolation execution 继承 parent snapshot；
 - snapshot/revert 继续只使用现有 journal/database mechanism。

@@ -1,10 +1,10 @@
 //! Profile-owned local genesis state application.
 
 #[cfg(feature = "hashkey")]
-use super::b20_addresses::{B20_ACTIVATION_REGISTRY, B20_FACTORY, B20_POLICY_REGISTRY};
+use super::h20_addresses::{H20_ACTIVATION_REGISTRY, H20_FACTORY, H20_POLICY_REGISTRY};
 use alloy_primitives::{Address, Bytes, U256};
 #[cfg(feature = "hashkey")]
-use hsk_b20_precompiles::ActivationFeature;
+use hsk_h20_precompiles::ActivationFeature;
 
 /// The backing state established by a lifecycle caller.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,21 +58,21 @@ impl super::ResolvedNetworkProfile {
     #[cfg(feature = "hashkey")]
     fn apply_hashkey_genesis<S: LocalGenesisState>(state: &mut S) -> Result<(), S::Error> {
         let marker_code = Bytes::from_static(&[0xef]);
-        for address in [B20_FACTORY, B20_ACTIVATION_REGISTRY, B20_POLICY_REGISTRY] {
+        for address in [H20_FACTORY, H20_ACTIVATION_REGISTRY, H20_POLICY_REGISTRY] {
             state.patch_account(address, marker_code.clone(), 1)?;
         }
 
         let activation_root = erc7201_namespace_root(b"base.activation_registry");
         for feature in [
             ActivationFeature::PolicyRegistry,
-            ActivationFeature::B20Stablecoin,
-            ActivationFeature::B20Asset,
+            ActivationFeature::H20Stablecoin,
+            ActivationFeature::H20Asset,
         ] {
             let mut encoded = [0u8; 64];
             encoded[..32].copy_from_slice(feature.id().as_slice());
             encoded[32..].copy_from_slice(&activation_root.to_be_bytes::<32>());
             let slot = U256::from_be_bytes(alloy_primitives::keccak256(encoded).0);
-            state.set_storage(B20_ACTIVATION_REGISTRY, slot, U256::from(1))?;
+            state.set_storage(H20_ACTIVATION_REGISTRY, slot, U256::from(1))?;
         }
 
         Ok(())
@@ -188,27 +188,27 @@ mod tests {
         profile.apply_profile_genesis(ProfileGenesisTarget::FreshStandalone, &mut state).unwrap();
 
         let mut expected_accounts = vec![
-            (address!("B20F000000000000000000000000000000000000"), Bytes::from_static(&[0xef]), 1),
-            (address!("8453000000000000000000000000000000000001"), Bytes::from_static(&[0xef]), 1),
-            (address!("8453000000000000000000000000000000000002"), Bytes::from_static(&[0xef]), 1),
+            (address!("0177FF0000000000000000000000000000000000"), Bytes::from_static(&[0xef]), 1),
+            (address!("0177FF0000000000000000000000000000000001"), Bytes::from_static(&[0xef]), 1),
+            (address!("0177FF0000000000000000000000000000000002"), Bytes::from_static(&[0xef]), 1),
         ];
         expected_accounts.sort_unstable();
         assert_eq!(state.normalized_accounts(), expected_accounts);
 
         let mut expected_storage = vec![
             (
-                address!("8453000000000000000000000000000000000001"),
+                address!("0177FF0000000000000000000000000000000001"),
                 uint!(0x8c5327ddcca092db72284503162323c6e8d392394b1d5c71991227bbc26f7c07_U256),
                 U256::from(1),
             ),
             (
-                address!("8453000000000000000000000000000000000001"),
-                uint!(0xca7c276524c5aeaac4d56c8a3d36eb5f9a64f60841fb65b539c99c21ca7df109_U256),
+                address!("0177FF0000000000000000000000000000000001"),
+                uint!(0xf0464d76cbf5393c72bf1d37f7a2cab26dda96f4ea5f765002334b823a265ffa_U256),
                 U256::from(1),
             ),
             (
-                address!("8453000000000000000000000000000000000001"),
-                uint!(0x819420403a306232adb8ee78d9f35b5090371155b34376cf9b020e30029278e5_U256),
+                address!("0177FF0000000000000000000000000000000001"),
+                uint!(0x7bbefaa09825c91a707f8f01422fffff1ab80d1a560229cbf4820368ff7f9576_U256),
                 U256::from(1),
             ),
         ];
@@ -227,7 +227,7 @@ mod tests {
     fn adapter_failure_is_transparent_and_stops_application() {
         let profile = super::super::NetworkConfigs::with_hashkey().resolve();
         let account_failure_point =
-            Operation::Account(address!("8453000000000000000000000000000000000001"));
+            Operation::Account(address!("0177FF0000000000000000000000000000000001"));
         let mut account_failure =
             RecordingState { fail_on: Some(account_failure_point), ..Default::default() };
         let error = profile
@@ -239,7 +239,7 @@ mod tests {
         assert!(account_failure.storage.is_empty());
 
         let storage_failure_point = Operation::Storage(
-            address!("8453000000000000000000000000000000000001"),
+            address!("0177FF0000000000000000000000000000000001"),
             uint!(0x8c5327ddcca092db72284503162323c6e8d392394b1d5c71991227bbc26f7c07_U256),
         );
         let mut storage_failure =

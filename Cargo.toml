@@ -527,9 +527,10 @@ tempo-revm = { git = "https://github.com/tempoxyz/tempo", rev = "e5c794e53c529ad
 tempo-contracts = { git = "https://github.com/tempoxyz/tempo", rev = "e5c794e53c529ad15287f688cf8328ee985ccef5" }
 tempo-precompiles = { git = "https://github.com/tempoxyz/tempo", rev = "e5c794e53c529ad15287f688cf8328ee985ccef5" }
 
-# HashKey B20.
-hsk-b20-config = { git = "https://github.com/HSKChain/optimism", rev = "ab1d97f342299b62964eabcccde404e76481eb7a" }
-hsk-b20-precompiles = { git = "https://github.com/HSKChain/optimism", rev = "ab1d97f342299b62964eabcccde404e76481eb7a" }
+# HashKey H20. Keep these path dependencies pointed at the sibling Optimism checkout so local
+# Foundry builds exercise the exact native precompile implementation under development.
+hsk-h20-config = { path = "../optimism/rust/h20/config" }
+hsk-h20-precompiles = { path = "../optimism/rust/h20/precompiles" }
 
 ## Pinned dependencies. Enabled for the workspace in crates/test-utils.
 

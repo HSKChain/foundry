@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
-interface IB20Factory {
-    enum B20Variant {
+interface IH20Factory {
+    enum H20Variant {
         ASSET,
         STABLECOIN
     }
 
-    struct B20AssetCreateParams {
+    struct H20AssetCreateParams {
         uint8 version;
         string name;
         string symbol;
@@ -15,7 +15,7 @@ interface IB20Factory {
         uint8 decimals;
     }
 
-    struct B20StablecoinCreateParams {
+    struct H20StablecoinCreateParams {
         uint8 version;
         string name;
         string symbol;
@@ -25,16 +25,16 @@ interface IB20Factory {
 
     error InitCallFailed(uint256 index);
 
-    function createB20(B20Variant variant, bytes32 salt, bytes calldata params, bytes[] calldata initCalls)
+    function createH20(H20Variant variant, bytes32 salt, bytes calldata params, bytes[] calldata initCalls)
         external
         returns (address token);
 
-    function getB20Address(B20Variant variant, address sender, bytes32 salt) external view returns (address);
+    function getH20Address(H20Variant variant, address sender, bytes32 salt) external view returns (address);
 
-    function isB20Initialized(address token) external view returns (bool);
+    function isH20Initialized(address token) external view returns (bool);
 }
 
-interface IB20 {
+interface IH20 {
     error AccessControlUnauthorizedAccount(address account, bytes32 neededRole);
 
     function name() external view returns (string memory);
@@ -47,7 +47,7 @@ interface IB20 {
     function grantRole(bytes32 role, address account) external;
 }
 
-interface IB20Stablecoin is IB20 {
+interface IH20Stablecoin is IH20 {
     function currency() external view returns (string memory);
 }
 
@@ -77,8 +77,8 @@ interface IPolicyRegistry {
     function policyAdmin(uint64 policyId) external view returns (address);
 }
 
-contract B20Caller {
-    address constant FACTORY = 0xB20f000000000000000000000000000000000000;
+contract H20Caller {
+    address constant FACTORY = 0x0177FF0000000000000000000000000000000000;
 
     function createAsset(bytes32 salt, string memory name, string memory symbol, address admin)
         external
@@ -96,11 +96,11 @@ contract B20Caller {
         bytes[] memory initCalls
     ) public returns (address token) {
         bytes memory params = abi.encode(
-            IB20Factory.B20AssetCreateParams({
+            IH20Factory.H20AssetCreateParams({
                 version: 1, name: name, symbol: symbol, initialAdmin: admin, decimals: 18
             })
         );
-        token = IB20Factory(FACTORY).createB20(IB20Factory.B20Variant.ASSET, salt, params, initCalls);
+        token = IH20Factory(FACTORY).createH20(IH20Factory.H20Variant.ASSET, salt, params, initCalls);
     }
 
     function createStablecoin(
@@ -111,23 +111,23 @@ contract B20Caller {
         string memory currency
     ) external returns (address token) {
         bytes memory params = abi.encode(
-            IB20Factory.B20StablecoinCreateParams({
+            IH20Factory.H20StablecoinCreateParams({
                 version: 1, name: name, symbol: symbol, initialAdmin: admin, currency: currency
             })
         );
         bytes[] memory noInitCalls = new bytes[](0);
-        token = IB20Factory(FACTORY).createB20(IB20Factory.B20Variant.STABLECOIN, salt, params, noInitCalls);
+        token = IH20Factory(FACTORY).createH20(IH20Factory.H20Variant.STABLECOIN, salt, params, noInitCalls);
     }
 
     function predictAssetAddress(address creator, bytes32 salt) external view returns (address) {
-        return IB20Factory(FACTORY).getB20Address(IB20Factory.B20Variant.ASSET, creator, salt);
+        return IH20Factory(FACTORY).getH20Address(IH20Factory.H20Variant.ASSET, creator, salt);
     }
 }
 
-contract B20Rollback {
+contract H20Rollback {
     error ForcedRollback();
 
-    function mintThenRevert(IB20 token, address to, uint256 amount) external {
+    function mintThenRevert(IH20 token, address to, uint256 amount) external {
         token.mint(to, amount);
         revert ForcedRollback();
     }

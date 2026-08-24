@@ -4856,7 +4856,7 @@ mod tests {
         );
 
         let inventory = network_profile.precompile_inventory(None);
-        assert_eq!(api.backend.precompiles().get("B20Factory"), inventory.get("B20Factory"));
+        assert_eq!(api.backend.precompiles().get("H20Factory"), inventory.get("H20Factory"));
 
         api.anvil_reset(Some(Forking {
             json_rpc_url: Some(origin_handle.http_endpoint()),
@@ -4867,7 +4867,7 @@ mod tests {
 
         assert!(api.backend.is_fork());
         assert_eq!(api.backend.network_profile(), network_profile);
-        let factory = *inventory.get("B20Factory").unwrap();
+        let factory = *inventory.get("H20Factory").unwrap();
         assert_eq!(api.get_code(factory, None).await.unwrap(), Bytes::new());
 
         api.anvil_reset(Some(Forking::default())).await.unwrap();

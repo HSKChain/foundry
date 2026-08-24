@@ -43,7 +43,7 @@ See the [installation guide](https://getfoundry.sh/getting-started/installation)
 
 To verify a downloaded release archive or container image, see [Verifying Releases](./SECURITY.md#verifying-releases).
 
-### HashKey B20 local profile
+### HashKey H20 local profile
 
 HSKChain release archives keep Foundry's standard `forge`, `cast`, `anvil`, and `chisel` binary
 names. The HSKChain installer exposes them through namespaced wrappers so they can coexist with a
@@ -51,7 +51,7 @@ stock Foundry installation:
 
 ```sh
 curl -L https://raw.githubusercontent.com/HSKChain/foundry/HEAD/foundryup/install | bash
-hsk-foundryup --install v1.7.1-hsk-b20
+hsk-foundryup --install v1.7.1-hsk-h20
 ```
 
 This installs `hsk-forge`, `hsk-cast`, `hsk-anvil`, and `hsk-chisel` without replacing
@@ -61,7 +61,7 @@ the namespaced commands:
 ```sh
 git clone https://github.com/HSKChain/foundry.git foundry-hsk
 cd foundry-hsk
-git checkout v1.7.1-hsk-b20
+git checkout v1.7.1-hsk-h20
 hsk-foundryup --path "$PWD"
 ```
 
@@ -82,10 +82,10 @@ Or make it the project default in `foundry.toml`:
 network = "hashkey"
 ```
 
-This profile provides deterministic **local-development** B20 state. Its activation time, admin,
+This profile provides deterministic **local-development** H20 state. Its activation time, admin,
 and feature state are not HashKey mainnet or testnet parameters. See the
-[HashKey B20 local simulation guide](./docs/hashkey-b20.md) and
-[configuration reference](./docs/hashkey-b20-config.md) before using it.
+[HashKey H20 local simulation guide](./docs/hashkey-h20.md) and
+[configuration reference](./docs/hashkey-h20-config.md) before using it.
 
 ## Getting Started
 

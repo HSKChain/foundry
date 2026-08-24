@@ -3,42 +3,42 @@ pragma solidity ^0.8.0;
 
 import {Test} from "forge-std/Test.sol";
 import {
-    B20Caller,
-    B20Rollback,
+    H20Caller,
+    H20Rollback,
     IActivationRegistry,
-    IB20,
-    IB20Factory,
-    IB20Stablecoin,
+    IH20,
+    IH20Factory,
+    IH20Stablecoin,
     IPolicyRegistry
-} from "../src/B20.sol";
+} from "../src/H20.sol";
 
-contract B20LifecycleTest is Test {
-    B20Caller caller;
-    B20Rollback rollback;
+contract H20LifecycleTest is Test {
+    H20Caller caller;
+    H20Rollback rollback;
 
-    address constant FACTORY = 0xB20f000000000000000000000000000000000000;
-    address constant ACTIVATION_REGISTRY = 0x8453000000000000000000000000000000000001;
-    address constant POLICY_REGISTRY = 0x8453000000000000000000000000000000000002;
+    address constant FACTORY = 0x0177FF0000000000000000000000000000000000;
+    address constant ACTIVATION_REGISTRY = 0x0177FF0000000000000000000000000000000001;
+    address constant POLICY_REGISTRY = 0x0177FF0000000000000000000000000000000002;
     address constant ACTIVATION_ADMIN = 0xCB00000000000000000000000000000000000000;
     address constant ALICE = address(0xA11CE);
     address constant OUTSIDER = address(0xBAD);
-    bytes32 constant ASSET_FEATURE = keccak256("base.b20_asset");
+    bytes32 constant ASSET_FEATURE = keccak256("hsk.h20_asset");
     bytes32 constant SALT = bytes32(uint256(0xC0FFEE));
 
     function setUp() public {
-        caller = new B20Caller();
-        rollback = new B20Rollback();
+        caller = new H20Caller();
+        rollback = new H20Rollback();
     }
 
     function testAssetAndStablecoinLifecycle() public {
         address predicted = caller.predictAssetAddress(address(caller), SALT);
         address asset = caller.createAsset(SALT, "TestAsset", "TST", address(this));
-        IB20 assetToken = IB20(asset);
+        IH20 assetToken = IH20(asset);
 
         assertEq(asset, predicted, "deterministic address mismatch");
-        assertEq(uint8(uint160(asset) >> 152), 0xb2, "asset address must have B20 prefix");
+        assertEq(uint8(uint160(asset) >> 152), 0xb2, "asset address must have H20 prefix");
         assertEq(asset.code, hex"ef", "asset marker missing");
-        assertTrue(IB20Factory(FACTORY).isB20Initialized(asset), "asset not initialized");
+        assertTrue(IH20Factory(FACTORY).isH20Initialized(asset), "asset not initialized");
         assertEq(assetToken.decimals(), 18, "asset decimals mismatch");
         assetToken.grantRole(assetToken.MINT_ROLE(), address(this));
         assetToken.mint(ALICE, 1000e18);
@@ -47,10 +47,10 @@ contract B20LifecycleTest is Test {
         assertEq(assetToken.balanceOf(ALICE), 600e18, "asset sender balance mismatch");
 
         address stablecoin = caller.createStablecoin(keccak256("stablecoin"), "USD Coin", "USDC", address(this), "USD");
-        IB20Stablecoin stablecoinToken = IB20Stablecoin(stablecoin);
+        IH20Stablecoin stablecoinToken = IH20Stablecoin(stablecoin);
 
         assertEq(stablecoin.code, hex"ef", "stablecoin marker missing");
-        assertTrue(IB20Factory(FACTORY).isB20Initialized(stablecoin), "stablecoin not initialized");
+        assertTrue(IH20Factory(FACTORY).isH20Initialized(stablecoin), "stablecoin not initialized");
         assertEq(stablecoinToken.currency(), "USD", "currency mismatch");
         assertEq(stablecoinToken.decimals(), 6, "stablecoin decimals mismatch");
         stablecoinToken.grantRole(stablecoinToken.MINT_ROLE(), address(this));
@@ -99,11 +99,11 @@ contract B20LifecycleTest is Test {
     }
 
     function testTypedMutationFailurePreservesTokenState() public {
-        IB20 token = IB20(caller.createAsset(keccak256("typed"), "Typed", "TYP", address(this)));
+        IH20 token = IH20(caller.createAsset(keccak256("typed"), "Typed", "TYP", address(this)));
         bytes32 mintRole = token.MINT_ROLE();
 
         vm.startPrank(OUTSIDER);
-        vm.expectRevert(abi.encodeWithSelector(IB20.AccessControlUnauthorizedAccount.selector, OUTSIDER, mintRole));
+        vm.expectRevert(abi.encodeWithSelector(IH20.AccessControlUnauthorizedAccount.selector, OUTSIDER, mintRole));
         token.mint(ALICE, 1e18);
         vm.stopPrank();
 
@@ -117,16 +117,16 @@ contract B20LifecycleTest is Test {
         bytes[] memory initCalls = new bytes[](1);
         initCalls[0] = hex"deadbeef";
 
-        vm.expectRevert(abi.encodeWithSelector(IB20Factory.InitCallFailed.selector, uint256(0)));
+        vm.expectRevert(abi.encodeWithSelector(IH20Factory.InitCallFailed.selector, uint256(0)));
         caller.createAssetWithInit(failedSalt, "Failed", "FAIL", address(this), initCalls);
 
         assertEq(predicted.code.length, 0, "failed create left marker");
-        assertTrue(!IB20Factory(FACTORY).isB20Initialized(predicted), "failed create left storage");
+        assertTrue(!IH20Factory(FACTORY).isH20Initialized(predicted), "failed create left storage");
         _assertUninitialized(predicted);
 
-        IB20 token = IB20(caller.createAsset(keccak256("failed-mint"), "Rollback", "RBK", address(this)));
+        IH20 token = IH20(caller.createAsset(keccak256("failed-mint"), "Rollback", "RBK", address(this)));
         token.grantRole(token.MINT_ROLE(), address(rollback));
-        vm.expectRevert(B20Rollback.ForcedRollback.selector);
+        vm.expectRevert(H20Rollback.ForcedRollback.selector);
         rollback.mintThenRevert(token, ALICE, 10e18);
 
         assertEq(token.totalSupply(), 0, "reverted mint changed supply");
@@ -136,7 +136,7 @@ contract B20LifecycleTest is Test {
     function testSnapshotRestoresDynamicStateAndGenesisBaseline() public {
         uint256 snapshotId = vm.snapshotState();
         address predicted = caller.predictAssetAddress(address(caller), SALT);
-        IB20 token = IB20(caller.createAsset(SALT, "Snapshot", "SNP", address(this)));
+        IH20 token = IH20(caller.createAsset(SALT, "Snapshot", "SNP", address(this)));
         token.grantRole(token.MINT_ROLE(), address(this));
         token.mint(ALICE, 12e18);
 
@@ -145,7 +145,7 @@ contract B20LifecycleTest is Test {
         assertTrue(vm.revertToState(snapshotId), "snapshot revert failed");
 
         assertEq(predicted.code.length, 0, "snapshot retained dynamic marker");
-        assertTrue(!IB20Factory(FACTORY).isB20Initialized(predicted), "snapshot retained token state");
+        assertTrue(!IH20Factory(FACTORY).isH20Initialized(predicted), "snapshot retained token state");
         _assertUninitialized(predicted);
         assertEq(FACTORY.code, hex"ef", "snapshot removed factory baseline");
         assertEq(ACTIVATION_REGISTRY.code, hex"ef", "snapshot removed activation baseline");
@@ -156,12 +156,12 @@ contract B20LifecycleTest is Test {
 
         address recreated = caller.createAsset(SALT, "Snapshot", "SNP", address(this));
         assertEq(recreated, predicted, "snapshot did not restore factory state");
-        assertEq(IB20(recreated).totalSupply(), 0, "snapshot retained token storage");
+        assertEq(IH20(recreated).totalSupply(), 0, "snapshot retained token storage");
     }
 
     function _assertUninitialized(address token) internal {
-        (bool ok, bytes memory data) = token.call(abi.encodeWithSelector(IB20.name.selector));
-        assertTrue(!ok, "uninitialized B20 call succeeded");
-        assertEq(data.length, 0, "uninitialized B20 returned typed data");
+        (bool ok, bytes memory data) = token.call(abi.encodeWithSelector(IH20.name.selector));
+        assertTrue(!ok, "uninitialized H20 call succeeded");
+        assertEq(data.length, 0, "uninitialized H20 returned typed data");
     }
 }

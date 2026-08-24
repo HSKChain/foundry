@@ -3,7 +3,7 @@
 > 状态：已确认 architecture contract，source implementation 已落地于
 > `crates/evm/core/src/opts/resolution.rs`；后续 command consumer migration 仍按 issues #55-#63 推进。
 >
-> 适用分支：`v1.7.1-hsk-b20`。
+> 适用分支：`v1.7.1-hsk-h20`。
 >
 > 本文深化 architecture review Candidate 2。它取代 Forge、Script、Verify、Cast、Chisel 与
 > Anvil 各自维护的 selector precedence、chain/fork inference 和 exactly-once resolution
@@ -308,7 +308,7 @@ EVM family dispatch 继续由各 command 当前的 `ResolvedNetworkProfile::evm_
 
 ## 9. Compatibility 与 deletion contract
 
-在 `v1.7.1-hsk-b20` 上采用 hard cutover。所有 workspace command caller 必须迁移到 canonical
+在 `v1.7.1-hsk-h20` 上采用 hard cutover。所有 workspace command caller 必须迁移到 canonical
 resolution interface，不保留能暴露中间 mutation 的 deprecated shim。
 
 应删除：
@@ -358,7 +358,7 @@ evm_opts.networks.resolve()
 - `--json` success schema 不变；
 - `--quiet` 与 verbosity 行为不变；
 - exit code 仍为 `0`；
-- EVM family、trace、state transition 与 B20/Tempo behavior 不变。
+- EVM family、trace、state transition 与 H20/Tempo behavior 不变。
 
 resolution failure 使用既有 CLI error projection：
 
@@ -464,7 +464,7 @@ caller 只使用 canonical interface。migration bridge 不得跨发布保留。
 - [ ] legal CLI/stdout/stderr/JSON/exit behavior 不变。
 - [ ] resolution errors 使用 stderr、exit `1`，且不泄漏 RPC secrets。
 - [ ] resolver matrix 替换旧 helper tests，不使用 live external RPC。
-- [ ] family dispatch、B20 genesis、trace decoding 与 release gate ownership 不扩张。
+- [ ] family dispatch、H20 genesis、trace decoding 与 release gate ownership 不扩张。
 
 ## 14. Rejected alternatives
 

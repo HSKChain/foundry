@@ -160,13 +160,13 @@ mod tests {
         let executor =
             TracingExecutor::new(prepared, None, TraceMode::Call, Address::ZERO, None).unwrap();
         let trace = CallTrace {
-            address: address!("B20F000000000000000000000000000000000000"),
+            address: address!("0177FF0000000000000000000000000000000000"),
             ..Default::default()
         };
 
         assert_eq!(
             executor.constructed.decode_function(&trace).await.label.as_deref(),
-            Some("B20Factory")
+            Some("H20Factory")
         );
     }
 }

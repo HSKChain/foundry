@@ -88,5 +88,5 @@ op-alloy-rpc-types.workspace = true
 anvil.workspace = true
 foundry-evm-networks = { workspace = true, features = ["test-utils"] }
 foundry-test-utils.workspace = true
-hsk-b20-config.workspace = true
-hsk-b20-precompiles.workspace = true
+hsk-h20-config.workspace = true
+hsk-h20-precompiles.workspace = true

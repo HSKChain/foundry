@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Dependency and repository contract checks for the HashKey B20 release gate."""
+"""Dependency and repository contract checks for the HashKey H20 release gate."""
 
 from __future__ import annotations
 
@@ -42,9 +42,9 @@ def workspace_test_environment() -> dict[str, str]:
 
 
 APPROVED_REPOSITORY = "https://github.com/HSKChain/optimism"
-APPROVED_REVISION = "ab1d97f342299b62964eabcccde404e76481eb7a"
+APPROVED_REVISION = "d4d5c6b51998365c2d15c22909b6ce0698e8cfed"
 RELEASE_VERSION = "1.7.1"
-HSK_RELEASE_TAG_PATTERN = rf"v{re.escape(RELEASE_VERSION)}-hsk-b20(?:[.-][0-9A-Za-z]+)*"
+HSK_RELEASE_TAG_PATTERN = rf"v{re.escape(RELEASE_VERSION)}-hsk-h20(?:[.-][0-9A-Za-z]+)*"
 ORDINARY_RELEASE_TAG_PATTERN = r"v[0-9]+\.[0-9]+\.[0-9]+(?:[-.][0-9A-Za-z]+)*"
 RELEASE_BASELINE_REVISION = "4072e48705af9d93e3c0f6e29e93b5e9a40caed8"
 RUST_VERSION = "1.95"
@@ -66,7 +66,11 @@ RELEASE_FEATURES = (
     "js-tracer",
     "hashkey",
 )
-B20_PACKAGES = ("hsk-b20-config", "hsk-b20-precompiles")
+H20_PACKAGES = ("hsk-h20-config", "hsk-h20-precompiles")
+H20_PATHS = {
+    "hsk-h20-config": "../optimism/rust/h20/config",
+    "hsk-h20-precompiles": "../optimism/rust/h20/precompiles",
+}
 ALLOY_CORE_PACKAGES = (
     "alloy-primitives",
     "alloy-sol-types",
@@ -175,19 +179,16 @@ def validate_dependency_files(root: Path) -> list[str]:
     if workspace.get("package", {}).get("version") != RELEASE_VERSION:
         errors.append(f"workspace package version must be {RELEASE_VERSION}")
 
-    for package in B20_PACKAGES:
+    for package in H20_PACKAGES:
         dependency = dependencies.get(package)
         if not isinstance(dependency, dict):
-            errors.append(f"{package} must be a workspace Git dependency")
+            errors.append(f"{package} must be a workspace path dependency")
             continue
-        if dependency.get("git") != APPROVED_REPOSITORY:
-            errors.append(f"{package} must use {APPROVED_REPOSITORY}")
-        if dependency.get("rev") != APPROVED_REVISION:
-            errors.append(f"{package} must pin rev {APPROVED_REVISION}")
-        if "branch" in dependency or "tag" in dependency:
-            errors.append(f"{package} must not use a moving branch or tag")
-        if "path" in dependency:
-            errors.append(f"{package} must not use a local path")
+        expected_path = H20_PATHS[package]
+        if dependency.get("path") != expected_path:
+            errors.append(f"{package} path must be {expected_path}")
+        if any(key in dependency for key in ("git", "rev", "branch", "tag")):
+            errors.append(f"{package} must use only the pinned sibling Optimism path")
 
     for manifest_path in root.rglob("Cargo.toml"):
         if any(part in {".git", "target"} for part in manifest_path.parts):
@@ -204,6 +205,12 @@ def validate_dependency_files(root: Path) -> list[str]:
                     )
                 path = dependency.get("path")
                 if isinstance(path, str):
+                    if (
+                        manifest_path == root / "Cargo.toml"
+                        and name in H20_PATHS
+                        and path == H20_PATHS[name]
+                    ):
+                        continue
                     resolved = (manifest_path.parent / path).resolve()
                     if not is_within(resolved, root):
                         errors.append(
@@ -212,15 +219,12 @@ def validate_dependency_files(root: Path) -> list[str]:
 
     lock = load_toml(root / "Cargo.lock")
     packages = lock.get("package", [])
-    expected_source = (
-        f"git+{APPROVED_REPOSITORY}?rev={APPROVED_REVISION}#{APPROVED_REVISION}"
-    )
-    for package in B20_PACKAGES:
+    for package in H20_PACKAGES:
         matches = [entry for entry in packages if entry.get("name") == package]
         if len(matches) != 1:
             errors.append(f"Cargo.lock must contain exactly one {package} package")
-        elif matches[0].get("source") != expected_source:
-            errors.append(f"Cargo.lock {package} source must be {expected_source}")
+        elif matches[0].get("source") is not None:
+            errors.append(f"Cargo.lock {package} must resolve from the sibling path")
 
     return errors
 
@@ -385,15 +389,15 @@ def validate_release_files(root: Path) -> list[str]:
         errors.append("Make must call the canonical source operation")
 
     required_docs = (
-        root / "docs/hashkey-b20.md",
-        root / "docs/hashkey-b20-config.md",
+        root / "docs/hashkey-h20.md",
+        root / "docs/hashkey-h20-config.md",
     )
     for path in required_docs:
         if not path.is_file():
             errors.append(f"missing HashKey release documentation: {path.relative_to(root)}")
 
     readme = (root / "README.md").read_text(encoding="utf-8")
-    for link in ("./docs/hashkey-b20.md", "./docs/hashkey-b20-config.md"):
+    for link in ("./docs/hashkey-h20.md", "./docs/hashkey-h20-config.md"):
         if link not in readme:
             errors.append(f"README must link {link}")
 
@@ -421,8 +425,8 @@ def build_release_metadata(tag: str, commit: str) -> dict[str, Any]:
             "support_scope": "standalone-local",
             "production_fidelity": False,
         },
-        "b20": {
-            "semantics": "Beryl B20 v1",
+        "h20": {
+            "semantics": "Beryl H20 v1",
             "repository": APPROVED_REPOSITORY,
             "semantic_revision": APPROVED_REVISION,
             "binding_revision": APPROVED_REVISION,
@@ -456,13 +460,13 @@ def validate_release_metadata(
         errors.append(f"release metadata version must be {RELEASE_VERSION}")
     if release.get("binaries") != list(RELEASE_BINARIES):
         errors.append("release metadata binary set is invalid")
-    b20 = metadata.get("b20")
-    if not isinstance(b20, dict) or b20.get("repository") != APPROVED_REPOSITORY:
-        errors.append("release metadata B20 repository is invalid")
-    if isinstance(b20, dict) and b20.get("semantic_revision") != APPROVED_REVISION:
-        errors.append("release metadata B20 semantic revision is invalid")
-    if isinstance(b20, dict) and b20.get("binding_revision") != APPROVED_REVISION:
-        errors.append("release metadata B20 binding revision is invalid")
+    h20 = metadata.get("h20")
+    if not isinstance(h20, dict) or h20.get("repository") != APPROVED_REPOSITORY:
+        errors.append("release metadata H20 repository is invalid")
+    if isinstance(h20, dict) and h20.get("semantic_revision") != APPROVED_REVISION:
+        errors.append("release metadata H20 semantic revision is invalid")
+    if isinstance(h20, dict) and h20.get("binding_revision") != APPROVED_REVISION:
+        errors.append("release metadata H20 binding revision is invalid")
     return errors
 
 
@@ -647,7 +651,7 @@ def _golden_command(upstream: Path, suite: str) -> list[str]:
         "--manifest-path",
         str(upstream / "rust/Cargo.toml"),
         "-p",
-        "hsk-b20-precompiles",
+        "hsk-h20-precompiles",
         "--features",
         "test-utils",
         "--test",
@@ -805,10 +809,10 @@ def run_source_gate(input: SourceGateInput) -> GateOutcome:
             for evidence_id, suite in zip(
                 GOLDEN_EVIDENCE_IDS,
                 (
-                    "b20_asset_v1_golden",
-                    "b20_stablecoin_v1_golden",
-                    "b20_factory_v1_golden",
-                    "b20_policy_v1_golden",
+                    "h20_asset_v1_golden",
+                    "h20_stablecoin_v1_golden",
+                    "h20_factory_v1_golden",
+                    "h20_policy_v1_golden",
                 ),
             ):
                 results.append(
@@ -828,8 +832,8 @@ def run_source_gate(input: SourceGateInput) -> GateOutcome:
         "foundry-conformance": [["cargo", "test", "--locked", "-p", "foundry-evm-core@1.7.1", "--features", "hashkey", "--test", "hashkey"]],
         "cli.forge": [["cargo", "test", "--locked", "-p", "forge@1.7.1", "--test", "cli", "--features", "hashkey", "hashkey::"]],
         "cli.anvil": [["cargo", "test", "--locked", "-p", "anvil@1.7.1", "--test", "it", "--features", "hashkey", "hashkey::"]],
-        "cli.cast": [["cargo", "test", "--locked", "-p", "cast@1.7.1", "--test", "cli", "--features", "hashkey", "hashkey::hashkey_b20_anvil_cast_workflow", "--", "--exact"]],
-        "cli.chisel": [["cargo", "test", "--locked", "-p", "chisel@1.7.1", "--test", "it", "--features", "hashkey", "repl::hashkey_b20_stateful_session", "--", "--exact"]],
+        "cli.cast": [["cargo", "test", "--locked", "-p", "cast@1.7.1", "--test", "cli", "--features", "hashkey", "hashkey::hashkey_h20_anvil_cast_workflow", "--", "--exact"]],
+        "cli.chisel": [["cargo", "test", "--locked", "-p", "chisel@1.7.1", "--test", "it", "--features", "hashkey", "repl::hashkey_h20_stateful_session", "--", "--exact"]],
     }
     for evidence_id in FOCUSED_EVIDENCE_IDS:
         results.append(_source_result(evidence_id, executor, root, focused[evidence_id]))

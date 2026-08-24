@@ -2227,32 +2227,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "b20-precompile-macros"
-version = "0.1.0"
-source = "git+https://github.com/HSKChain/optimism?rev=ab1d97f342299b62964eabcccde404e76481eb7a#ab1d97f342299b62964eabcccde404e76481eb7a"
-dependencies = [
- "alloy-primitives",
- "proc-macro2",
- "quote",
- "syn 2.0.117",
-]
-
-[[package]]
-name = "b20-precompile-storage"
-version = "0.1.0"
-source = "git+https://github.com/HSKChain/optimism?rev=ab1d97f342299b62964eabcccde404e76481eb7a#ab1d97f342299b62964eabcccde404e76481eb7a"
-dependencies = [
- "alloy-evm",
- "alloy-primitives",
- "alloy-sol-types",
- "b20-precompile-macros",
- "derive_more",
- "revm",
- "thiserror 2.0.18",
- "tracing",
-]
-
-[[package]]
 name = "backtrace"
 version = "0.3.76"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5564,7 +5538,7 @@ dependencies = [
  "foundry-evm-networks",
  "foundry-evm-sancov",
  "foundry-evm-traces",
- "hsk-b20-config",
+ "hsk-h20-config",
  "indicatif",
  "parking_lot",
  "proptest",
@@ -5626,8 +5600,8 @@ dependencies = [
  "foundry-fork-db",
  "foundry-test-utils",
  "futures",
- "hsk-b20-config",
- "hsk-b20-precompiles",
+ "hsk-h20-config",
+ "hsk-h20-precompiles",
  "itertools 0.14.0",
  "op-alloy-consensus",
  "op-alloy-network",
@@ -5716,8 +5690,8 @@ dependencies = [
  "alloy-primitives",
  "clap",
  "foundry-evm-hardforks",
- "hsk-b20-config",
- "hsk-b20-precompiles",
+ "hsk-h20-config",
+ "hsk-h20-precompiles",
  "revm",
  "serde",
  "serde_json",
@@ -5746,7 +5720,7 @@ dependencies = [
  "foundry-evm-networks",
  "foundry-linking",
  "futures",
- "hsk-b20-precompiles",
+ "hsk-h20-precompiles",
  "itertools 0.14.0",
  "memchr",
  "rayon",
@@ -6269,6 +6243,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "h20-precompile-macros"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "h20-precompile-storage"
+version = "0.1.0"
+dependencies = [
+ "alloy-evm",
+ "alloy-primitives",
+ "alloy-sol-types",
+ "derive_more",
+ "h20-precompile-macros",
+ "revm",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
 name = "half"
 version = "2.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6406,23 +6404,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "hsk-b20-config"
+name = "hsk-h20-config"
 version = "0.1.0"
-source = "git+https://github.com/HSKChain/optimism?rev=ab1d97f342299b62964eabcccde404e76481eb7a#ab1d97f342299b62964eabcccde404e76481eb7a"
 dependencies = [
  "alloy-primitives",
 ]
 
 [[package]]
-name = "hsk-b20-precompiles"
+name = "hsk-h20-precompiles"
 version = "0.1.0"
-source = "git+https://github.com/HSKChain/optimism?rev=ab1d97f342299b62964eabcccde404e76481eb7a#ab1d97f342299b62964eabcccde404e76481eb7a"
 dependencies = [
  "alloy-evm",
  "alloy-primitives",
  "alloy-sol-types",
- "b20-precompile-macros",
- "b20-precompile-storage",
+ "h20-precompile-macros",
+ "h20-precompile-storage",
  "revm",
 ]
 

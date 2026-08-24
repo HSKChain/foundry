@@ -2345,11 +2345,11 @@ mod tests {
     fn backend_reuses_profile_and_state_without_an_activation_snapshot() {
         let profile = NetworkConfigs::with_hashkey().resolve();
         let mut backend = super::construction::spawn::<EthEvmNetwork>(None, profile).unwrap();
-        let b20_factory = address!("B20F000000000000000000000000000000000000");
+        let h20_factory = address!("0177FF0000000000000000000000000000000000");
         let markers = [
-            address!("B20F000000000000000000000000000000000000"),
-            address!("8453000000000000000000000000000000000001"),
-            address!("8453000000000000000000000000000000000002"),
+            address!("0177FF0000000000000000000000000000000000"),
+            address!("0177FF0000000000000000000000000000000001"),
+            address!("0177FF0000000000000000000000000000000002"),
         ];
         for address in markers {
             let account = backend.basic_ref(address).unwrap().unwrap();
@@ -2357,7 +2357,7 @@ mod tests {
             assert_eq!(account.nonce, 1);
             assert_eq!(account.code.unwrap().original_bytes().as_ref(), &[0xef]);
         }
-        let activation_registry = address!("8453000000000000000000000000000000000001");
+        let activation_registry = address!("0177FF0000000000000000000000000000000001");
         let feature_slot = alloy_primitives::uint!(
             0x8c5327ddcca092db72284503162323c6e8d392394b1d5c71991227bbc26f7c07_U256
         );
@@ -2370,14 +2370,14 @@ mod tests {
         assert_eq!(cloned.network_profile(), profile);
         assert_eq!(empty.network_profile(), profile);
         assert_eq!(cloned.storage_ref(activation_registry, feature_slot).unwrap(), U256::ZERO);
-        let empty_factory = empty.basic_ref(b20_factory).unwrap().unwrap_or_default();
+        let empty_factory = empty.basic_ref(h20_factory).unwrap().unwrap_or_default();
         assert_ne!(empty_factory.code.unwrap().original_bytes().as_ref(), &[0xef]);
         assert_eq!(empty_factory.nonce, 0);
         assert!(
-            !backend.fork_init_journaled_state.warm_addresses.precompiles().contains(&b20_factory)
+            !backend.fork_init_journaled_state.warm_addresses.precompiles().contains(&h20_factory)
         );
         assert!(
-            !empty.fork_init_journaled_state.warm_addresses.precompiles().contains(&b20_factory)
+            !empty.fork_init_journaled_state.warm_addresses.precompiles().contains(&h20_factory)
         );
     }
 

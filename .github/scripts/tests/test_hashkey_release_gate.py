@@ -281,18 +281,18 @@ class HashKeyReleaseGateTests(unittest.TestCase):
     def test_stable_release_tag_must_resolve_to_checkout_head(self):
         head = "a" * 40
         with mock.patch.object(gate.subprocess, "check_output", return_value=f"{head}\n") as check:
-            gate._validate_release_tag_head("v1.7.1-hsk-b20", head)
+            gate._validate_release_tag_head("v1.7.1-hsk-h20", head)
         check.assert_called_once_with(
-            ["git", "rev-parse", "refs/tags/v1.7.1-hsk-b20^{commit}"], text=True
+            ["git", "rev-parse", "refs/tags/v1.7.1-hsk-h20^{commit}"], text=True
         )
         with mock.patch.object(gate.subprocess, "check_output", return_value=f"{'b' * 40}\n"):
             with self.assertRaises(gate.ArtifactEvidenceError):
-                gate._validate_release_tag_head("v1.7.1-hsk-b20", head)
+                gate._validate_release_tag_head("v1.7.1-hsk-h20", head)
 
     def test_release_identity_projections_cover_hsk_stable_ordinary_and_nightly(self):
         self.assertEqual(
-            gate._release_identity_projection("v1.7.1-hsk-b20"),
-            ("hashkey-stable", "1.7.1-hsk-b20", None),
+            gate._release_identity_projection("v1.7.1-hsk-h20"),
+            ("hashkey-stable", "1.7.1-hsk-h20", None),
         )
         self.assertEqual(
             gate._release_identity_projection("v1.7.1"),
@@ -309,7 +309,7 @@ class HashKeyReleaseGateTests(unittest.TestCase):
     def test_artifact_gate_checks_native_surfaces_and_commit_identity(self):
         archive = self.make_tar()
         head = "a" * 40
-        identities = [gate.BinaryIdentity("1.7.1-hsk-b20", head)] * 4
+        identities = [gate.BinaryIdentity("1.7.1-hsk-h20", head)] * 4
         patches = [
             mock.patch.object(gate, "_host_matches_target", return_value=True),
             mock.patch.object(gate, "_probe_artifact_surfaces", return_value=(identities, "probed")),
@@ -321,7 +321,7 @@ class HashKeyReleaseGateTests(unittest.TestCase):
             for patch in patches:
                 stack.enter_context(patch)
             outcome = gate.run_artifact_gate(
-                gate.ArtifactGateInput(archive, "x86_64-unknown-linux-gnu", "v1.7.1-hsk-b20")
+                gate.ArtifactGateInput(archive, "x86_64-unknown-linux-gnu", "v1.7.1-hsk-h20")
             )
         self.assertTrue(outcome.success)
         self.assertEqual(
@@ -333,20 +333,20 @@ class HashKeyReleaseGateTests(unittest.TestCase):
         archive = self.make_tar()
         with mock.patch.object(gate, "_host_matches_target", return_value=False):
             outcome = gate.run_artifact_gate(
-                gate.ArtifactGateInput(archive, "x86_64-unknown-linux-gnu", "v1.7.1-hsk-b20")
+                gate.ArtifactGateInput(archive, "x86_64-unknown-linux-gnu", "v1.7.1-hsk-h20")
             )
         self.assertFalse(outcome.success)
         self.assertEqual(outcome.results[0].evidence_id, "artifact.host")
 
         head = "a" * 40
-        identities = [gate.BinaryIdentity("1.7.1-hsk-b20", "b" * 40)] * 4
+        identities = [gate.BinaryIdentity("1.7.1-hsk-h20", "b" * 40)] * 4
         with contextlib.ExitStack() as stack:
             stack.enter_context(mock.patch.object(gate, "_host_matches_target", return_value=True))
             stack.enter_context(mock.patch.object(gate, "_probe_artifact_surfaces", return_value=(identities, "probed")))
             stack.enter_context(mock.patch.object(gate, "_checkout_head", return_value=head))
             stack.enter_context(mock.patch.object(gate, "_validate_release_tag_head"))
             outcome = gate.run_artifact_gate(
-                gate.ArtifactGateInput(archive, "x86_64-unknown-linux-gnu", "v1.7.1-hsk-b20")
+                gate.ArtifactGateInput(archive, "x86_64-unknown-linux-gnu", "v1.7.1-hsk-h20")
             )
         self.assertFalse(outcome.success)
         self.assertEqual(
@@ -375,8 +375,8 @@ members = ["crate"]
 version = "{gate.RELEASE_VERSION}"
 
 [workspace.dependencies]
-hsk-b20-config = {{ git = "{gate.APPROVED_REPOSITORY}", rev = "{gate.APPROVED_REVISION}" }}
-hsk-b20-precompiles = {{ git = "{gate.APPROVED_REPOSITORY}", rev = "{gate.APPROVED_REVISION}" }}
+hsk-h20-config = {{ path = "{gate.H20_PATHS['hsk-h20-config']}" }}
+hsk-h20-precompiles = {{ path = "{gate.H20_PATHS['hsk-h20-precompiles']}" }}
 ''',
                 encoding="utf-8",
             )
@@ -384,21 +384,19 @@ hsk-b20-precompiles = {{ git = "{gate.APPROVED_REPOSITORY}", rev = "{gate.APPROV
                 f'''version = 4
 
 [[package]]
-name = "hsk-b20-config"
+name = "hsk-h20-config"
 version = "0.1.0"
-source = "git+{gate.APPROVED_REPOSITORY}?rev={gate.APPROVED_REVISION}#{gate.APPROVED_REVISION}"
 
 [[package]]
-name = "hsk-b20-precompiles"
+name = "hsk-h20-precompiles"
 version = "0.1.0"
-source = "git+{gate.APPROVED_REPOSITORY}?rev={gate.APPROVED_REVISION}#{gate.APPROVED_REVISION}"
 ''',
                 encoding="utf-8",
             )
 
             self.assertEqual(gate.validate_dependency_files(root), [])
 
-    def test_rejects_moving_b20_revision_and_base_dependency(self):
+    def test_rejects_moving_h20_revision_and_base_dependency(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "Cargo.toml").write_text(
@@ -409,8 +407,8 @@ members = []
 version = "{gate.RELEASE_VERSION}"
 
 [workspace.dependencies]
-hsk-b20-config = {{ git = "{gate.APPROVED_REPOSITORY}", branch = "main" }}
-hsk-b20-precompiles = {{ git = "https://github.com/base/base", rev = "deadbeef" }}
+hsk-h20-config = {{ path = "../wrong/config" }}
+hsk-h20-precompiles = {{ git = "https://github.com/base/base", rev = "deadbeef" }}
 ''',
                 encoding="utf-8",
             )
@@ -418,7 +416,7 @@ hsk-b20-precompiles = {{ git = "https://github.com/base/base", rev = "deadbeef" 
 
             errors = gate.validate_dependency_files(root)
 
-            self.assertTrue(any("hsk-b20-config" in error for error in errors))
+            self.assertTrue(any("hsk-h20-config" in error for error in errors))
             self.assertTrue(any("base/base" in error for error in errors))
 
     def test_rejects_external_path_dependency(self):
@@ -433,8 +431,8 @@ members = []
 version = "{gate.RELEASE_VERSION}"
 
 [workspace.dependencies]
-hsk-b20-config = {{ git = "{gate.APPROVED_REPOSITORY}", rev = "{gate.APPROVED_REVISION}" }}
-hsk-b20-precompiles = {{ git = "{gate.APPROVED_REPOSITORY}", rev = "{gate.APPROVED_REVISION}" }}
+hsk-h20-config = {{ path = "{gate.H20_PATHS['hsk-h20-config']}" }}
+hsk-h20-precompiles = {{ path = "{gate.H20_PATHS['hsk-h20-precompiles']}" }}
 tempo-revm = {{ path = "../tempo-spike/crates/revm" }}
 ''',
                 encoding="utf-8",
@@ -495,12 +493,12 @@ tempo-revm = {{ path = "../tempo-spike/crates/revm" }}
     def test_release_metadata_records_exact_compatibility_revisions(self):
         commit = "1" * 40
 
-        metadata = gate.build_release_metadata("v1.7.1-hsk-b20", commit)
+        metadata = gate.build_release_metadata("v1.7.1-hsk-h20", commit)
 
         self.assertEqual(metadata["release"]["foundry_commit"], commit)
         self.assertEqual(metadata["release"]["binaries"], ["forge", "cast", "anvil", "chisel"])
-        self.assertEqual(metadata["b20"]["semantic_revision"], gate.APPROVED_REVISION)
-        self.assertEqual(metadata["b20"]["binding_revision"], gate.APPROVED_REVISION)
+        self.assertEqual(metadata["h20"]["semantic_revision"], gate.APPROVED_REVISION)
+        self.assertEqual(metadata["h20"]["binding_revision"], gate.APPROVED_REVISION)
         self.assertEqual(
             metadata["compatibility"]["tempo"]["revision"], gate.TEMPO_REVISION
         )
@@ -520,16 +518,16 @@ tempo-revm = {{ path = "../tempo-spike/crates/revm" }}
 
     def test_release_metadata_generation_and_gated_validation_round_trip(self):
         commit = "2" * 40
-        metadata = gate.build_release_metadata("v1.7.1-hsk-b20", commit)
+        metadata = gate.build_release_metadata("v1.7.1-hsk-h20", commit)
         self.assertEqual(
             gate.validate_release_metadata(
-                metadata, expected_tag="v1.7.1-hsk-b20", expected_commit=commit
+                metadata, expected_tag="v1.7.1-hsk-h20", expected_commit=commit
             ),
             [],
         )
         self.assertTrue(
             gate.validate_release_metadata(
-                metadata, expected_tag="v1.7.1-hsk-b20", expected_commit="3" * 40
+                metadata, expected_tag="v1.7.1-hsk-h20", expected_commit="3" * 40
             )
         )
 
@@ -615,7 +613,7 @@ tempo-revm = {{ path = "../tempo-spike/crates/revm" }}
                     "--output",
                     output,
                     "--tag",
-                    "v1.7.1-hsk-b20",
+                    "v1.7.1-hsk-h20",
                     "--commit",
                     "2" * 40,
                 ],
@@ -623,7 +621,7 @@ tempo-revm = {{ path = "../tempo-spike/crates/revm" }}
             )
 
             metadata = json.loads(output.read_text(encoding="utf-8"))
-            self.assertEqual(metadata["release"]["tag"], "v1.7.1-hsk-b20")
+            self.assertEqual(metadata["release"]["tag"], "v1.7.1-hsk-h20")
             self.assertEqual(metadata["release"]["foundry_commit"], "2" * 40)
 
     @staticmethod

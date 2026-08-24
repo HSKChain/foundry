@@ -884,12 +884,12 @@ mod tests {
         let _runner = script_config.get_runner().await.unwrap();
         let prepared = script_config.prepared.as_ref().unwrap();
         let trace = CallTrace {
-            address: address!("B20F000000000000000000000000000000000000"),
+            address: address!("0177FF0000000000000000000000000000000000"),
             ..Default::default()
         };
         assert_eq!(
             prepared.trace_decoder(DecoderConfig::default()).decode_function(&trace).await.label,
-            Some("B20Factory".to_string())
+            Some("H20Factory".to_string())
         );
     }
 

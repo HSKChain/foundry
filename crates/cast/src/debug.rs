@@ -135,7 +135,7 @@ mod tests {
     use foundry_evm_networks::NetworkConfigs;
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn hashkey_debugger_projection_decodes_b20_calls() {
+    async fn hashkey_debugger_projection_decodes_h20_calls() {
         let mut token = [0u8; 20];
         token[0] = 0xb2;
         token[11..].fill(0x11);
@@ -175,7 +175,7 @@ mod tests {
         decode_debugger_traces(&mut traces, &decoder).await;
 
         let decoded = traces[0].1.nodes()[0].trace.decoded.as_deref().unwrap();
-        assert_eq!(decoded.label.as_deref(), Some("B20Asset"));
+        assert_eq!(decoded.label.as_deref(), Some("H20Asset"));
         let call = decoded.call_data.as_ref().unwrap();
         assert_eq!(call.signature, "mint(address,uint256)");
         assert_eq!(call.args, [recipient.to_string(), "42".to_string()]);

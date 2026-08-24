@@ -23,7 +23,7 @@ pub enum ProfileKind {
     Optimism,
     /// Tempo execution.
     Tempo,
-    /// HashKey B20 execution.
+    /// HashKey H20 execution.
     #[cfg(feature = "hashkey")]
     HashKey,
 }

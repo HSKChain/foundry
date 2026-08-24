@@ -1051,10 +1051,10 @@ mod tests {
     #[cfg(feature = "hashkey")]
     use foundry_evm_networks::NetworkConfigs;
     #[cfg(feature = "hashkey")]
-    use hsk_b20_precompiles::{B20Variant, IB20};
+    use hsk_h20_precompiles::{H20Variant, IH20};
 
     #[cfg(feature = "hashkey")]
-    fn b20_address(variant: B20Variant, salt: u8) -> Address {
+    fn h20_address(variant: H20Variant, salt: u8) -> Address {
         variant.compute_address(Address::repeat_byte(salt), B256::repeat_byte(salt)).0
     }
 
@@ -1069,10 +1069,10 @@ mod tests {
 
     #[cfg(feature = "hashkey")]
     #[tokio::test]
-    async fn hashkey_b20_calls_are_variant_scoped_and_malformed_data_stays_raw() {
+    async fn hashkey_h20_calls_are_variant_scoped_and_malformed_data_stays_raw() {
         let decoder = hashkey_decoder();
-        let asset = b20_address(B20Variant::Asset, 0x11);
-        let stablecoin = b20_address(B20Variant::Stablecoin, 0x22);
+        let asset = h20_address(H20Variant::Asset, 0x11);
+        let stablecoin = h20_address(H20Variant::Stablecoin, 0x22);
         let balance_of =
             Function::parse("balanceOf(address account) view returns (uint256)").unwrap();
 
@@ -1088,7 +1088,7 @@ mod tests {
                 ..Default::default()
             })
             .await;
-        assert_eq!(decoded.label.as_deref(), Some("B20Asset"));
+        assert_eq!(decoded.label.as_deref(), Some("H20Asset"));
         assert_eq!(decoded.call_data.unwrap().signature, "balanceOf(address)");
         assert_eq!(decoded.return_data.as_deref(), Some("7"));
 
@@ -1101,7 +1101,7 @@ mod tests {
                 ..Default::default()
             })
             .await;
-        assert_eq!(cross_variant.label.as_deref(), Some("B20Stablecoin"));
+        assert_eq!(cross_variant.label.as_deref(), Some("H20Stablecoin"));
         assert!(cross_variant.call_data.is_none());
 
         let malformed = decoder
@@ -1113,17 +1113,17 @@ mod tests {
                 ..Default::default()
             })
             .await;
-        assert_eq!(malformed.label.as_deref(), Some("B20Asset"));
+        assert_eq!(malformed.label.as_deref(), Some("H20Asset"));
         assert!(malformed.call_data.is_none());
         assert!(malformed.return_data.is_none());
     }
 
     #[cfg(feature = "hashkey")]
     #[tokio::test]
-    async fn hashkey_b20_events_require_the_canonical_emitting_address() {
+    async fn hashkey_h20_events_require_the_canonical_emitting_address() {
         let decoder = hashkey_decoder();
-        let asset = b20_address(B20Variant::Asset, 0x11);
-        let log = IB20::Transfer {
+        let asset = h20_address(H20Variant::Asset, 0x11);
+        let log = IH20::Transfer {
             from: Address::repeat_byte(0x33),
             to: Address::repeat_byte(0x44),
             amount: alloy_primitives::U256::from(7),
@@ -1134,7 +1134,7 @@ mod tests {
         assert_eq!(decoded.name.as_deref(), Some("Transfer"));
         assert_eq!(decoded.params.unwrap()[2].1, "7");
 
-        let factory = alloy_primitives::address!("B20F000000000000000000000000000000000000");
+        let factory = alloy_primitives::address!("0177FF0000000000000000000000000000000000");
         let wrong_address = decoder.decode_event_with_address(factory, &log).await;
         assert!(wrong_address.name.is_none());
         assert!(wrong_address.params.is_none());
