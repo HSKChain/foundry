@@ -17,7 +17,7 @@ contract H20ProtectionTest is Test {
     }
 
     function testLoadRemainsAvailableForProtectedState() public {
-        bytes32 namespaceHash = keccak256("base.activation_registry");
+        bytes32 namespaceHash = keccak256("hsk.activation_registry");
         bytes32 namespaceRoot = keccak256(abi.encode(uint256(namespaceHash) - 1)) & ~bytes32(uint256(0xff));
         bytes32 featureSlot = keccak256(abi.encode(ASSET_FEATURE, namespaceRoot));
         address token = caller.createAsset(keccak256("load"), "Loadable", "LOAD", address(this));

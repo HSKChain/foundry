@@ -59,7 +59,7 @@ Fresh standalone execution uses the following local fixture:
 | Singleton marker bytecode | `0xef` |
 
 The feature identifiers are `keccak256("hsk.h20_asset")`,
-`keccak256("hsk.h20_stablecoin")`, and `keccak256("base.policy_registry")`.
+`keccak256("hsk.h20_stablecoin")`, and `keccak256("hsk.policy_registry")`.
 
 The three singleton markers and activation slots are initialized once at the standalone backend or
 genesis boundary. They are not replayed whenever a new EVM is created. Dynamic Asset and Stablecoin

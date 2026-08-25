@@ -2359,7 +2359,7 @@ mod tests {
         }
         let activation_registry = address!("0177FF0000000000000000000000000000000001");
         let feature_slot = alloy_primitives::uint!(
-            0x8c5327ddcca092db72284503162323c6e8d392394b1d5c71991227bbc26f7c07_U256
+            0x8b392998db41c7a56188d244d46e8d66c0e0050b53b0bc8c714ab53aedfe76c7_U256
         );
         assert_eq!(backend.storage_ref(activation_registry, feature_slot).unwrap(), U256::from(1));
         backend.insert_account_storage(activation_registry, feature_slot, U256::ZERO).unwrap();

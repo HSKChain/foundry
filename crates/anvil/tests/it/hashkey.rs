@@ -27,13 +27,13 @@ const H20_ACTIVATION_REGISTRY: Address = address!("0177FF00000000000000000000000
 const H20_POLICY_REGISTRY: Address = address!("0177FF0000000000000000000000000000000002");
 const H20_FEATURE_SLOTS: [U256; 3] = [
     alloy_primitives::uint!(
-        0x8c5327ddcca092db72284503162323c6e8d392394b1d5c71991227bbc26f7c07_U256
+        0x8b392998db41c7a56188d244d46e8d66c0e0050b53b0bc8c714ab53aedfe76c7_U256
     ),
     alloy_primitives::uint!(
-        0xf0464d76cbf5393c72bf1d37f7a2cab26dda96f4ea5f765002334b823a265ffa_U256
+        0x4730f9e7e976620ebfcb1cdf39c7bb118e5041f58590168ef9bf4a81e5793967_U256
     ),
     alloy_primitives::uint!(
-        0x7bbefaa09825c91a707f8f01422fffff1ab80d1a560229cbf4820368ff7f9576_U256
+        0xccefe162b92620aa4539cf19b2b49990ae6c328fdc91d82c89e41c203b682d55_U256
     ),
 ];
 
@@ -162,7 +162,7 @@ async fn hashkey_custom_genesis_preserves_unowned_state() {
               "balance": "0x1",
               "nonce": "0x8",
               "code": "0xbeef",
-              "storage": {"0x8c5327ddcca092db72284503162323c6e8d392394b1d5c71991227bbc26f7c07": "0x0000000000000000000000000000000000000000000000000000000000000009"}
+              "storage": {"0x8b392998db41c7a56188d244d46e8d66c0e0050b53b0bc8c714ab53aedfe76c7": "0x0000000000000000000000000000000000000000000000000000000000000009"}
             },
             "4200000000000000000000000000000000000042": {
               "balance": "0x2b",

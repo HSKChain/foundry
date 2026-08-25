@@ -62,7 +62,7 @@ impl super::ResolvedNetworkProfile {
             state.patch_account(address, marker_code.clone(), 1)?;
         }
 
-        let activation_root = erc7201_namespace_root(b"base.activation_registry");
+        let activation_root = erc7201_namespace_root(b"hsk.activation_registry");
         for feature in [
             ActivationFeature::PolicyRegistry,
             ActivationFeature::H20Stablecoin,
@@ -198,17 +198,17 @@ mod tests {
         let mut expected_storage = vec![
             (
                 address!("0177FF0000000000000000000000000000000001"),
-                uint!(0x8c5327ddcca092db72284503162323c6e8d392394b1d5c71991227bbc26f7c07_U256),
+                uint!(0x8b392998db41c7a56188d244d46e8d66c0e0050b53b0bc8c714ab53aedfe76c7_U256),
                 U256::from(1),
             ),
             (
                 address!("0177FF0000000000000000000000000000000001"),
-                uint!(0xf0464d76cbf5393c72bf1d37f7a2cab26dda96f4ea5f765002334b823a265ffa_U256),
+                uint!(0x4730f9e7e976620ebfcb1cdf39c7bb118e5041f58590168ef9bf4a81e5793967_U256),
                 U256::from(1),
             ),
             (
                 address!("0177FF0000000000000000000000000000000001"),
-                uint!(0x7bbefaa09825c91a707f8f01422fffff1ab80d1a560229cbf4820368ff7f9576_U256),
+                uint!(0xccefe162b92620aa4539cf19b2b49990ae6c328fdc91d82c89e41c203b682d55_U256),
                 U256::from(1),
             ),
         ];
@@ -240,7 +240,7 @@ mod tests {
 
         let storage_failure_point = Operation::Storage(
             address!("0177FF0000000000000000000000000000000001"),
-            uint!(0x8c5327ddcca092db72284503162323c6e8d392394b1d5c71991227bbc26f7c07_U256),
+            uint!(0x8b392998db41c7a56188d244d46e8d66c0e0050b53b0bc8c714ab53aedfe76c7_U256),
         );
         let mut storage_failure =
             RecordingState { fail_on: Some(storage_failure_point), ..Default::default() };

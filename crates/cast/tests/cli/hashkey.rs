@@ -12,7 +12,7 @@ const RECIPIENT: Address = address!("0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
 const CREATOR_PRIVATE_KEY: &str =
     "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
 const H20_ASSET_FEATURE_SLOT: U256 = alloy_primitives::uint!(
-    0x7bbefaa09825c91a707f8f01422fffff1ab80d1a560229cbf4820368ff7f9576_U256
+    0xccefe162b92620aa4539cf19b2b49990ae6c328fdc91d82c89e41c203b682d55_U256
 );
 
 sol! {
