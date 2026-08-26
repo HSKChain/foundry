@@ -375,8 +375,8 @@ members = ["crate"]
 version = "{gate.RELEASE_VERSION}"
 
 [workspace.dependencies]
-hsk-h20-config = {{ path = "{gate.H20_PATHS['hsk-h20-config']}" }}
-hsk-h20-precompiles = {{ path = "{gate.H20_PATHS['hsk-h20-precompiles']}" }}
+hsk-h20-config = {{ git = "{gate.APPROVED_REPOSITORY}", branch = "{gate.H20_BRANCH}" }}
+hsk-h20-precompiles = {{ git = "{gate.APPROVED_REPOSITORY}", branch = "{gate.H20_BRANCH}" }}
 ''',
                 encoding="utf-8",
             )
@@ -386,17 +386,29 @@ hsk-h20-precompiles = {{ path = "{gate.H20_PATHS['hsk-h20-precompiles']}" }}
 [[package]]
 name = "hsk-h20-config"
 version = "0.1.0"
+source = "{gate.H20_LOCK_SOURCE}"
 
 [[package]]
 name = "hsk-h20-precompiles"
 version = "0.1.0"
+source = "{gate.H20_LOCK_SOURCE}"
+
+[[package]]
+name = "h20-precompile-macros"
+version = "0.1.0"
+source = "{gate.H20_LOCK_SOURCE}"
+
+[[package]]
+name = "h20-precompile-storage"
+version = "0.1.0"
+source = "{gate.H20_LOCK_SOURCE}"
 ''',
                 encoding="utf-8",
             )
 
             self.assertEqual(gate.validate_dependency_files(root), [])
 
-    def test_rejects_moving_h20_revision_and_base_dependency(self):
+    def test_rejects_wrong_h20_branch_and_base_dependency(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "Cargo.toml").write_text(
@@ -407,7 +419,7 @@ members = []
 version = "{gate.RELEASE_VERSION}"
 
 [workspace.dependencies]
-hsk-h20-config = {{ path = "../wrong/config" }}
+hsk-h20-config = {{ git = "{gate.APPROVED_REPOSITORY}", branch = "wrong" }}
 hsk-h20-precompiles = {{ git = "https://github.com/base/base", rev = "deadbeef" }}
 ''',
                 encoding="utf-8",
@@ -431,8 +443,8 @@ members = []
 version = "{gate.RELEASE_VERSION}"
 
 [workspace.dependencies]
-hsk-h20-config = {{ path = "{gate.H20_PATHS['hsk-h20-config']}" }}
-hsk-h20-precompiles = {{ path = "{gate.H20_PATHS['hsk-h20-precompiles']}" }}
+hsk-h20-config = {{ git = "{gate.APPROVED_REPOSITORY}", branch = "{gate.H20_BRANCH}" }}
+hsk-h20-precompiles = {{ git = "{gate.APPROVED_REPOSITORY}", branch = "{gate.H20_BRANCH}" }}
 tempo-revm = {{ path = "../tempo-spike/crates/revm" }}
 ''',
                 encoding="utf-8",

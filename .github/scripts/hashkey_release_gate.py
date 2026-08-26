@@ -42,7 +42,7 @@ def workspace_test_environment() -> dict[str, str]:
 
 
 APPROVED_REPOSITORY = "https://github.com/HSKChain/optimism"
-APPROVED_REVISION = "d4d5c6b51998365c2d15c22909b6ce0698e8cfed"
+APPROVED_REVISION = "0907e577d0013414a8b64ebf3280d5bb6b9d01c9"
 RELEASE_VERSION = "1.7.1"
 HSK_RELEASE_TAG_PATTERN = rf"v{re.escape(RELEASE_VERSION)}-hsk-h20(?:[.-][0-9A-Za-z]+)*"
 ORDINARY_RELEASE_TAG_PATTERN = r"v[0-9]+\.[0-9]+\.[0-9]+(?:[-.][0-9A-Za-z]+)*"
@@ -67,10 +67,11 @@ RELEASE_FEATURES = (
     "hashkey",
 )
 H20_PACKAGES = ("hsk-h20-config", "hsk-h20-precompiles")
-H20_PATHS = {
-    "hsk-h20-config": "../optimism/rust/h20/config",
-    "hsk-h20-precompiles": "../optimism/rust/h20/precompiles",
-}
+H20_LOCK_PACKAGES = (*H20_PACKAGES, "h20-precompile-macros", "h20-precompile-storage")
+H20_BRANCH = "kona-v1.6.3-b20"
+H20_LOCK_SOURCE = (
+    f"git+{APPROVED_REPOSITORY}?branch={H20_BRANCH}#{APPROVED_REVISION}"
+)
 ALLOY_CORE_PACKAGES = (
     "alloy-primitives",
     "alloy-sol-types",
@@ -182,13 +183,17 @@ def validate_dependency_files(root: Path) -> list[str]:
     for package in H20_PACKAGES:
         dependency = dependencies.get(package)
         if not isinstance(dependency, dict):
-            errors.append(f"{package} must be a workspace path dependency")
+            errors.append(f"{package} must be a workspace Git dependency")
             continue
-        expected_path = H20_PATHS[package]
-        if dependency.get("path") != expected_path:
-            errors.append(f"{package} path must be {expected_path}")
-        if any(key in dependency for key in ("git", "rev", "branch", "tag")):
-            errors.append(f"{package} must use only the pinned sibling Optimism path")
+        if (
+            dependency.get("git") != APPROVED_REPOSITORY
+            or dependency.get("branch") != H20_BRANCH
+        ):
+            errors.append(
+                f"{package} must use {APPROVED_REPOSITORY} branch {H20_BRANCH}"
+            )
+        if any(key in dependency for key in ("path", "rev", "tag")):
+            errors.append(f"{package} must use only the approved Optimism branch")
 
     for manifest_path in root.rglob("Cargo.toml"):
         if any(part in {".git", "target"} for part in manifest_path.parts):
@@ -205,12 +210,6 @@ def validate_dependency_files(root: Path) -> list[str]:
                     )
                 path = dependency.get("path")
                 if isinstance(path, str):
-                    if (
-                        manifest_path == root / "Cargo.toml"
-                        and name in H20_PATHS
-                        and path == H20_PATHS[name]
-                    ):
-                        continue
                     resolved = (manifest_path.parent / path).resolve()
                     if not is_within(resolved, root):
                         errors.append(
@@ -219,12 +218,12 @@ def validate_dependency_files(root: Path) -> list[str]:
 
     lock = load_toml(root / "Cargo.lock")
     packages = lock.get("package", [])
-    for package in H20_PACKAGES:
+    for package in H20_LOCK_PACKAGES:
         matches = [entry for entry in packages if entry.get("name") == package]
         if len(matches) != 1:
             errors.append(f"Cargo.lock must contain exactly one {package} package")
-        elif matches[0].get("source") is not None:
-            errors.append(f"Cargo.lock {package} must resolve from the sibling path")
+        elif matches[0].get("source") != H20_LOCK_SOURCE:
+            errors.append(f"Cargo.lock {package} source must be {H20_LOCK_SOURCE}")
 
     return errors
 

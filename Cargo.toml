@@ -528,8 +528,8 @@ tempo-contracts = { git = "https://github.com/tempoxyz/tempo", rev = "e5c794e53c
 tempo-precompiles = { git = "https://github.com/tempoxyz/tempo", rev = "e5c794e53c529ad15287f688cf8328ee985ccef5" }
 
 # HashKey H20 native precompiles.
-hsk-h20-config = { git = "https://github.com/TraceBundy/optimism", branch = "kona-v1.6.3-b20" }
-hsk-h20-precompiles = { git = "https://github.com/TraceBundy/optimism", branch = "kona-v1.6.3-b20" }
+hsk-h20-config = { git = "https://github.com/HSKChain/optimism", branch = "kona-v1.6.3-b20" }
+hsk-h20-precompiles = { git = "https://github.com/HSKChain/optimism", branch = "kona-v1.6.3-b20" }
 
 ## Pinned dependencies. Enabled for the workspace in crates/test-utils.
 
