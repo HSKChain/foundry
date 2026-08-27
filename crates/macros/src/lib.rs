@@ -6,7 +6,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 #[macro_use]
-extern crate proc_macro_error2;
+extern crate proc_macro_error3;
 
 use proc_macro::TokenStream;
 use syn::{DeriveInput, Error, parse_macro_input};

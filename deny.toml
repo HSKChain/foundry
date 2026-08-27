@@ -7,10 +7,13 @@ yanked = "warn"
 ignore = [
     # https://rustsec.org/advisories/RUSTSEC-2024-0436 paste! is unmaintained
     "RUSTSEC-2024-0436",
-    # https://rustsec.org/advisories/RUSTSEC-2025-0141 bincode is unmaintained
-    "RUSTSEC-2025-0141",
-    # https://rustsec.org/advisories/RUSTSEC-2026-0097 rand is unsound with a custom logger
-    "RUSTSEC-2026-0097",
+    # alloy-core 1.6 is pinned by the H20 compatibility binding and still uses this
+    # unmaintained proc-macro helper. Foundry's direct use has migrated to proc-macro-error3.
+    "RUSTSEC-2026-0173",
+    # quick-xml 0.39.2 is only a build dependency of email-address-parser via Soldeer.
+    # It does not parse untrusted XML at runtime; runtime consumers use patched quick-xml 0.41.
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
 ]
 
 # This section is considered when running `cargo deny check bans`.
@@ -112,8 +115,9 @@ allow-git = [
     # Transitive dependency of Tempo
     "https://github.com/paradigmxyz/reth",
     "https://github.com/paradigmxyz/reth-core",
-    # Temporary: upstream OP crates until release is published.
-    "https://github.com/ethereum-optimism/optimism",
+    # Temporary Foundry forks until upstream Optimism completes the REVM 41 migration.
+    "https://github.com/foundry-rs/optimism",
+    "https://github.com/foundry-rs/op-revm",
     # HashKey H20 semantic baseline; the exact revision is enforced by the release gate.
     "https://github.com/HSKChain/optimism",
 ]

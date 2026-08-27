@@ -2,11 +2,11 @@ use proc_macro2::{Ident, Span, TokenStream};
 use quote::quote;
 use syn::{Attribute, Data, DataStruct, DeriveInput, Error, Result};
 
-// TODO: `proc_macro_error2` only emits warnings when feature "nightly" is enabled, which we can't
+// TODO: `proc_macro_error3` only emits warnings when feature "nightly" is enabled, which we can't
 // practically enable.
 macro_rules! emit_warning {
     ($($t:tt)*) => {
-        proc_macro_error2::emit_error! { $($t)* }
+        proc_macro_error3::emit_error! { $($t)* }
     };
 }
 
