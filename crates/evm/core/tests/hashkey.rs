@@ -372,7 +372,7 @@ fn expected_observables() -> Vec<ScenarioObservable> {
             output: IPolicyRegistry::createPolicyCall::abi_encode_returns(&2).into(),
             gas_used: 116_009,
             logs_hash: b256!("1ac76809bdaf74c91b5488dd387690a62bddab5d2d8043d61fb22de7e74b6fb5"),
-            storage_hash: b256!("30b61663b013681a8b07bb95a074050cbca49303e75818c8a12b79a4f9e290c9"),
+            storage_hash: b256!("fb26d63e81c7586036f0eca048f54d736fb0d9037e62ec9d77c7b0aff35e6040"),
         },
         ScenarioObservable {
             scenario: H20Scenario::ReadActivation,
