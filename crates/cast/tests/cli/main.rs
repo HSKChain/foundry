@@ -2824,15 +2824,7 @@ Context:
     // If --disable-block-gas-limit is provided, the transaction should succeed
     // despite the gas limit exceeding the block gas limit.
     cmd.cast_fuse()
-        .args([
-            "run",
-            "-v",
-            &tx_hash,
-            "--quick",
-            "--rpc-url",
-            &proxy,
-            "--disable-block-gas-limit",
-        ])
+        .args(["run", "-v", &tx_hash, "--quick", "--rpc-url", &proxy, "--disable-block-gas-limit"])
         .assert_success()
         .stdout_eq(str![[r#"
 ...
@@ -2846,13 +2838,15 @@ Transaction successfully executed.
 /// `eth_getBlockByNumber` responses so the reported block gas limit is
 /// `block_gas_limit`. Returns the proxy base URL.
 fn spawn_block_gas_limit_proxy(upstream: &str, block_gas_limit: u64) -> String {
-    use std::io::{BufReader, Write};
-    use std::net::{TcpListener, TcpStream};
+    use std::{
+        io::{BufReader, Write},
+        net::{TcpListener, TcpStream},
+    };
 
     let listener = TcpListener::bind("127.0.0.1:0").expect("failed to bind proxy");
     let proxy_url = format!("http://{}", listener.local_addr().expect("proxy address"));
     let upstream = upstream.strip_prefix("http://").unwrap_or(upstream).to_string();
-    let gas_limit_hex = format!("{:#x}", block_gas_limit);
+    let gas_limit_hex = format!("{block_gas_limit:#x}");
 
     std::thread::spawn(move || {
         for conn in listener.incoming() {
@@ -2936,7 +2930,9 @@ fn request_body_has_method(request: &[u8], method: &str) -> bool {
     };
     serde_json::from_slice::<serde_json::Value>(&request[header_end + 4..])
         .ok()
-        .and_then(|value| value.get("method").and_then(|method_value| method_value.as_str()).map(str::to_owned))
+        .and_then(|value| {
+            value.get("method").and_then(|method_value| method_value.as_str()).map(str::to_owned)
+        })
         .is_some_and(|actual| actual == method)
 }
 
@@ -2976,10 +2972,10 @@ fn rewrite_json_gas_limit(response: &[u8], gas_limit_hex: &str) -> Vec<u8> {
     let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(body) else {
         return response.to_vec();
     };
-    if let Some(result) = value.get_mut("result") {
-        if let Some(gas_limit) = result.get_mut("gasLimit") {
-            *gas_limit = serde_json::Value::String(gas_limit_hex.to_string());
-        }
+    if let Some(result) = value.get_mut("result")
+        && let Some(gas_limit) = result.get_mut("gasLimit")
+    {
+        *gas_limit = serde_json::Value::String(gas_limit_hex.to_string());
     }
     let new_body = serde_json::to_vec(&value).expect("serialize rewritten response");
 

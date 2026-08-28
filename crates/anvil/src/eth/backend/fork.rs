@@ -37,7 +37,7 @@ use tokio::sync::RwLock as AsyncRwLock;
 
 /// Represents a fork of a remote client
 ///
-/// This type contains a subset of the [`EthApi`](crate::eth::EthApi) functions but will exclusively
+/// This type contains a subset of the [`crate::eth::EthApi`] functions but will exclusively
 /// fetch the requested data from the remote client, if it wasn't already fetched.
 #[derive(Clone, Debug)]
 pub struct ClientFork<N: Network = AnyNetwork> {

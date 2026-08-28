@@ -1271,8 +1271,8 @@ mod tests {
     fn stateful_rebuild_preserves_hashkey_profile_and_state() {
         GlobalArgs::default().block_on(async {
             let address = Address::random();
-            let mut evm_opts = EvmOpts::default();
-            evm_opts.networks = NetworkConfigs::with_hashkey();
+            let mut evm_opts =
+                EvmOpts { networks: NetworkConfigs::with_hashkey(), ..Default::default() };
             evm_opts.env.chain_id = Some(31337);
             evm_opts.env.gas_limit = GasLimit(30_000_000);
             let resolved = CommandProfileResolution::new()

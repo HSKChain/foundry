@@ -639,8 +639,7 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_profile_family_mismatch_before_preparation() {
-        let mut evm_opts = EvmOpts::default();
-        evm_opts.networks = NetworkConfigs::with_optimism();
+        let evm_opts = EvmOpts { networks: NetworkConfigs::with_optimism(), ..Default::default() };
         let error =
             match EvmConstruction::prepare::<EthEvmNetwork>(&resolve(evm_opts), &Config::default())
                 .await
@@ -662,8 +661,8 @@ mod tests {
     #[cfg(feature = "hashkey")]
     #[tokio::test(flavor = "multi_thread")]
     async fn rejects_reusable_state_from_another_resolved_profile() {
-        let mut hashkey_opts = EvmOpts::default();
-        hashkey_opts.networks = NetworkConfigs::with_hashkey();
+        let hashkey_opts =
+            EvmOpts { networks: NetworkConfigs::with_hashkey(), ..Default::default() };
         let hashkey = resolve(hashkey_opts);
         let state = EvmConstruction::prepare::<OpEvmNetwork>(&hashkey, &Config::default())
             .await

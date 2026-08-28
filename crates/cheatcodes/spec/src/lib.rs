@@ -127,8 +127,7 @@ mod tests {
     /// Generates the [cheatcodes](json_cheatcodes) JSON schema.
     #[cfg(feature = "schema")]
     fn json_schema() -> String {
-        let mut value =
-            serde_json::to_value(schemars::schema_for!(Cheatcodes<'_>)).unwrap();
+        let mut value = serde_json::to_value(schemars::schema_for!(Cheatcodes<'_>)).unwrap();
         sort_json_keys(&mut value);
         serde_json::to_string_pretty(&value).unwrap()
     }
@@ -143,7 +142,7 @@ mod tests {
                 let mut entries: Vec<(String, serde_json::Value)> =
                     std::mem::take(map).into_iter().collect();
                 entries.sort_by(|a, b| a.0.cmp(&b.0));
-                for (_, child) in entries.iter_mut() {
+                for (_, child) in &mut entries {
                     sort_json_keys(child);
                 }
                 *map = entries.into_iter().collect();

@@ -65,7 +65,7 @@ network = "hashkey"
     let policy_registry =
         NetworkTraceIdentity::H20PolicyRegistry.fixed_address().unwrap().to_string();
     let asset_feature = keccak256("hsk.h20_asset").to_string();
-    let asset_feature_slot = format!("{:#x}", H20_ASSET_FEATURE_SLOT);
+    let asset_feature_slot = format!("{H20_ASSET_FEATURE_SLOT:#x}");
     let recipient = RECIPIENT.to_string();
     let admin = DEVELOPMENT_ADMIN.to_string();
     let creator = CREATOR.to_string();

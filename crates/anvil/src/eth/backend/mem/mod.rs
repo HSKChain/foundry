@@ -240,9 +240,8 @@ pub struct Backend<N: Network> {
     /// data to the evm during its execution.
     ///
     /// At time of writing, there are two different types of `Db`:
-    ///   - [`MemDb`](crate::mem::in_memory_db::MemDb): everything is stored in memory
-    ///   - [`ForkDb`](crate::mem::fork_db::ForkedDatabase): forks off a remote client, missing
-    ///     data is retrieved via RPC-calls
+    ///   - [`MemDb`]: everything is stored in memory
+    ///   - [`ForkDb`]: forks off a remote client, missing data is retrieved via RPC-calls
     ///
     /// In order to commit changes to the [`revm::Database`], the [`alloy_evm::Evm`] requires
     /// mutable access, which requires a write-lock from this `db`. In forking mode, the time
@@ -4830,9 +4829,10 @@ mod tests {
         let chain_id = evm_env.cfg_env.chain_id;
 
         evm_env.block_env.timestamp = U256::from(99);
-        let before = super::AnvilEvmConstruction::new(api.backend.as_ref(), &evm_env);
-        assert_eq!(before.network_context, NetworkExecutionContext::new(chain_id, 99));
-        drop(before);
+        {
+            let before = super::AnvilEvmConstruction::new(api.backend.as_ref(), &evm_env);
+            assert_eq!(before.network_context, NetworkExecutionContext::new(chain_id, 99));
+        }
 
         evm_env.block_env.timestamp = U256::from(100);
         let active = super::AnvilEvmConstruction::new(api.backend.as_ref(), &evm_env);

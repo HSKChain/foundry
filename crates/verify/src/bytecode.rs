@@ -638,9 +638,11 @@ mod tests {
     #[cfg(feature = "hashkey")]
     #[test]
     fn verify_chain_hint_preserves_explicit_hashkey_profile() {
-        let mut config = Config::default();
-        config.networks = foundry_evm_networks::NetworkConfigs::with_hashkey();
-        let (_, evm_opts) = config.clone().load_config_and_evm_opts().unwrap();
+        let config = Config {
+            networks: foundry_evm_networks::NetworkConfigs::with_hashkey(),
+            ..Default::default()
+        };
+        let (_, evm_opts) = config.load_config_and_evm_opts().unwrap();
 
         let resolved = CommandProfileResolution::new()
             .resolve_evm_opts(evm_opts, NetworkIntent::new().with_chain_hint(1))

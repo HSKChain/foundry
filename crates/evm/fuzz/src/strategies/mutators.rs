@@ -478,11 +478,11 @@ fn sample_gaussian_scale<R: Rng>(rng: &mut R) -> Option<f64> {
 /// Applies a floating-point scale factor to a byte slice representing an unsigned or signed
 /// integer.
 fn apply_scale_to_bytes(bytes: &mut [u8], scale_factor: f64) -> Option<()> {
-    let mut carry_down = 0.0;
+    let mut carry_down = 0.0_f64;
 
     for i in (0..bytes.len()).rev() {
         let byte_val = bytes[i] as f64;
-        let scaled = (byte_val + carry_down * 256.0) * scale_factor;
+        let scaled = carry_down.mul_add(256.0, byte_val) * scale_factor;
 
         if i == 0 && scaled >= 256.0 {
             for b in bytes.iter_mut() {

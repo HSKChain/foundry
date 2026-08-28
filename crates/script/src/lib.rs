@@ -866,8 +866,10 @@ mod tests {
     #[cfg(feature = "hashkey")]
     #[tokio::test(flavor = "multi_thread")]
     async fn script_config_preserves_hashkey_profile_for_local_simulation() {
-        let mut evm_opts = EvmOpts::default();
-        evm_opts.networks = foundry_evm_networks::NetworkConfigs::with_hashkey();
+        let evm_opts = EvmOpts {
+            networks: foundry_evm_networks::NetworkConfigs::with_hashkey(),
+            ..Default::default()
+        };
         let resolved = CommandProfileResolution::new()
             .resolve_evm_opts(evm_opts, NetworkIntent::new())
             .unwrap();

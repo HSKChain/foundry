@@ -1187,20 +1187,14 @@ impl NodeConfig {
             base_fee_params,
         );
 
-        let (db, fork, genesis_target): (
-            Arc<TokioRwLock<Box<dyn Db>>>,
-            Option<ClientFork>,
-            ProfileGenesisTarget,
-        ) = if let Some(eth_rpc_url) = self.fork_urls.first().cloned() {
+        let (db, fork, genesis_target) = if let Some(eth_rpc_url) = self.fork_urls.first().cloned()
+        {
             let (db, fork) =
                 self.setup_fork_db(eth_rpc_url, &mut evm_env, &fees, network_profile).await?;
             (db, fork, ProfileGenesisTarget::RemoteFork)
         } else {
-            (
-                Arc::new(TokioRwLock::new(Box::<MemDb>::default())),
-                None,
-                ProfileGenesisTarget::FreshStandalone,
-            )
+            let db: Box<dyn Db> = Box::<MemDb>::default();
+            (Arc::new(TokioRwLock::new(db)), None, ProfileGenesisTarget::FreshStandalone)
         };
 
         // if provided use all settings of `genesis.json`

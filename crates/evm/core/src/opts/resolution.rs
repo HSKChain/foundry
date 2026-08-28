@@ -235,7 +235,9 @@ pub trait ForkIdentitySource {
 /// An asynchronous fork identity source used by production RPC adapters.
 pub trait AsyncForkIdentitySource {
     /// Returns fork identity, or a typed transport error.
-    async fn resolve(&mut self) -> Result<Option<ForkIdentity>, ForkIdentityError>;
+    fn resolve(
+        &mut self,
+    ) -> impl Future<Output = Result<Option<ForkIdentity>, ForkIdentityError>> + Send;
 }
 
 /// A production JSON-RPC adapter for fork identity resolution.

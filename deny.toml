@@ -55,7 +55,6 @@ allow = [
     "ISC",
     "MIT",
     "MPL-2.0",
-    "OpenSSL",
     "Unicode-3.0",
     "Unlicense",
     "WTFPL",
@@ -101,12 +100,8 @@ unknown-registry = "warn"
 # in the allow list is encountered
 unknown-git = "deny"
 allow-git = [
-    "https://github.com/alloy-rs/alloy",
-    "https://github.com/alloy-rs/evm",
     "https://github.com/foundry-rs/foundry-core",
-    "https://github.com/paradigmxyz/revm-inspectors",
     "https://github.com/paradigmxyz/solar",
-    "https://github.com/bluealloy/revm",
     # Only for tests.
     "https://github.com/rust-cli/rexpect",
     # Tempo
@@ -114,7 +109,6 @@ allow-git = [
     "https://github.com/tempoxyz/mpp-rs",
     # Transitive dependency of Tempo
     "https://github.com/paradigmxyz/reth",
-    "https://github.com/paradigmxyz/reth-core",
     # Temporary Foundry forks until upstream Optimism completes the REVM 41 migration.
     "https://github.com/foundry-rs/optimism",
     "https://github.com/foundry-rs/op-revm",
