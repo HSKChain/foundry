@@ -6,7 +6,7 @@ use crate::{
     multi_runner::matches_artifact,
     result::{SuiteResult, TestOutcome, TestStatus},
     traces::{
-        CallTraceDecoderBuilder, InternalTraceMode, TraceKind,
+        InternalTraceMode, TraceKind,
         debug::{ContractSources, DebugTraceIdentifier},
         decode_trace_arena, folded_stack_trace,
         identifier::SignaturesIdentifier,
@@ -31,7 +31,7 @@ use foundry_compilers::{
     utils::source_files_iter,
 };
 use foundry_config::{
-    Config, figment,
+    Chain, Config, figment,
     figment::{
         Metadata, Profile, Provider,
         value::{Dict, Map},
@@ -40,16 +40,19 @@ use foundry_config::{
 };
 use foundry_debugger::Debugger;
 use foundry_evm::{
-    core::evm::{
-        BlockEnvFor, EthEvmNetwork, FoundryEvmNetwork, OpEvmNetwork, SpecFor, TempoEvmNetwork,
-        TxEnvFor,
+    construction::{DecoderConfig, EvmConstruction},
+    core::evm::{EthEvmNetwork, FoundryEvmNetwork, OpEvmNetwork, TempoEvmNetwork},
+    opts::{
+        EvmOpts,
+        resolution::{
+            CommandProfileResolution, NetworkIntent, ResolvedEvmOpts, RpcForkIdentitySource,
+        },
     },
-    opts::EvmOpts,
     traces::{backtrace::BacktraceBuilder, identifier::TraceIdentifiers, prune_trace_depth},
 };
+use foundry_evm_networks::EvmFamily;
 use rand::Rng;
 use regex::Regex;
-use revm::context::Transaction;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt::Write,
@@ -339,43 +342,53 @@ impl TestArgs {
             InternalTraceMode::None
         };
 
-        // Auto-detect network from fork chain ID when not explicitly configured.
-        evm_opts.infer_network_from_fork().await;
+        let fork_identity = RpcForkIdentitySource::from_evm_opts(&evm_opts);
+        let mut resolution = CommandProfileResolution::with_fork_identity_source(fork_identity);
+        let resolved = resolution
+            .resolve_evm_opts_async(evm_opts.clone(), NetworkIntent::new().with_fork_identity())
+            .await?;
 
-        // Dispatch based on network type.
-        let (libraries, mut outcome) = if evm_opts.networks.is_tempo() {
-            self.build_and_run_tests::<TempoEvmNetwork>(
-                config,
-                evm_opts,
-                output,
-                filter,
-                coverage,
-                should_debug,
-                decode_internal,
-            )
-            .await?
-        } else if evm_opts.networks.is_optimism() {
-            self.build_and_run_tests::<OpEvmNetwork>(
-                config,
-                evm_opts,
-                output,
-                filter,
-                coverage,
-                should_debug,
-                decode_internal,
-            )
-            .await?
-        } else {
-            self.build_and_run_tests::<EthEvmNetwork>(
-                config,
-                evm_opts,
-                output,
-                filter,
-                coverage,
-                should_debug,
-                decode_internal,
-            )
-            .await?
+        // Dispatch based on the resolved EVM family.
+        let (libraries, mut outcome) = match resolved.network_profile().evm_family() {
+            EvmFamily::Ethereum => {
+                self.build_and_run_tests::<EthEvmNetwork>(
+                    config,
+                    evm_opts,
+                    resolved,
+                    output,
+                    filter,
+                    coverage,
+                    should_debug,
+                    decode_internal,
+                )
+                .await?
+            }
+            EvmFamily::Optimism => {
+                self.build_and_run_tests::<OpEvmNetwork>(
+                    config.clone(),
+                    evm_opts.clone(),
+                    resolved.clone(),
+                    output,
+                    filter,
+                    coverage,
+                    should_debug,
+                    decode_internal,
+                )
+                .await?
+            }
+            EvmFamily::Tempo => {
+                self.build_and_run_tests::<TempoEvmNetwork>(
+                    config.clone(),
+                    evm_opts.clone(),
+                    resolved.clone(),
+                    output,
+                    filter,
+                    coverage,
+                    should_debug,
+                    decode_internal,
+                )
+                .await?
+            }
         };
 
         if should_draw {
@@ -456,6 +469,7 @@ impl TestArgs {
         &self,
         config: Config,
         evm_opts: EvmOpts,
+        resolved: ResolvedEvmOpts,
         output: &ProjectCompileOutput,
         filter: &ProjectPathsAwareFilter,
         coverage: bool,
@@ -463,20 +477,17 @@ impl TestArgs {
         decode_internal: InternalTraceMode,
     ) -> eyre::Result<(Libraries, TestOutcome)> {
         let verbosity = evm_opts.verbosity;
-        let (evm_env, tx_env, fork_block) =
-            evm_opts.env::<SpecFor<FEN>, BlockEnvFor<FEN>, TxEnvFor<FEN>>().await?;
-
         let config = Arc::new(config);
+        let prepared = EvmConstruction::prepare::<FEN>(&resolved, &config).await?;
         let runner = MultiContractRunnerBuilder::new(config.clone())
             .set_debug(should_debug)
             .set_decode_internal(decode_internal)
             .initial_balance(evm_opts.initial_balance)
             .sender(evm_opts.sender)
-            .with_fork(evm_opts.get_fork(&config, evm_env.cfg_env.chain_id, fork_block))
             .enable_isolation(evm_opts.isolate)
             .fail_fast(self.fail_fast)
             .set_coverage(coverage)
-            .build::<FEN, MultiCompiler>(output, evm_env, tx_env, evm_opts)?;
+            .build::<FEN, MultiCompiler>(output, prepared, evm_opts)?;
 
         let libraries = runner.libraries.clone();
         let outcome = self.run_tests_inner(runner, config, verbosity, filter, output).await?;
@@ -580,8 +591,8 @@ impl TestArgs {
             return Ok(TestOutcome::new(Some(kc), results, self.allow_failure, fuzz_seed));
         }
 
-        let remote_chain =
-            if runner.fork.is_some() { runner.tx_env.chain_id().map(Into::into) } else { None };
+        let prepared = runner.tcfg.prepared.clone();
+        let remote_chain = prepared.fork_chain_id().map(Chain::from_id);
         let known_contracts = runner.known_contracts.clone();
 
         let libraries = runner.libraries.clone();
@@ -606,23 +617,22 @@ impl TestArgs {
         }
 
         // Build the trace decoder.
-        let mut builder = CallTraceDecoderBuilder::new()
-            .with_known_contracts(&known_contracts)
-            .with_label_disabled(self.disable_labels)
-            .with_verbosity(verbosity)
-            .with_chain_id(remote_chain.map(|c| c.id()));
+        let mut decoder_config = DecoderConfig::default()
+            .known_contracts(known_contracts.clone())
+            .label_disabled(self.disable_labels)
+            .verbosity(verbosity);
         // Signatures are of no value for gas reports.
         if !self.gas_report {
-            builder =
-                builder.with_signature_identifier(SignaturesIdentifier::from_config(&config)?);
+            decoder_config =
+                decoder_config.signature_identifier(SignaturesIdentifier::from_config(&config)?);
         }
 
         if self.decode_internal {
             let sources =
                 ContractSources::from_project_output(output, &config.root, Some(&libraries))?;
-            builder = builder.with_debug_identifier(DebugTraceIdentifier::new(sources));
+            decoder_config = decoder_config.debug_identifier(DebugTraceIdentifier::new(sources));
         }
-        let mut decoder = builder.build();
+        let mut decoder = prepared.trace_decoder(decoder_config);
 
         let mut gas_report = self.gas_report.then(|| {
             GasReport::new(
@@ -1105,7 +1115,6 @@ fn junit_xml_report(results: &BTreeMap<String, SuiteResult>, verbosity: u8) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
-    use foundry_config::Chain;
 
     #[test]
     fn watch_parse() {

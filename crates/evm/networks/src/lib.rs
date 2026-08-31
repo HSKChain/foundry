@@ -5,20 +5,120 @@
 use crate::celo::transfer::{
     CELO_TRANSFER_ADDRESS, CELO_TRANSFER_LABEL, PRECOMPILE_ID_CELO_TRANSFER,
 };
+#[cfg(feature = "hashkey")]
+use crate::h20_addresses::{H20_ACTIVATION_REGISTRY, H20_FACTORY, H20_POLICY_REGISTRY};
 use alloy_chains::{
     Chain, NamedChain,
     NamedChain::{Chiado, Gnosis, Moonbase, Moonbeam, MoonbeamDev, Moonriver, Rsk, RskTestnet},
 };
 use alloy_eips::eip1559::BaseFeeParams;
+#[cfg(feature = "hashkey")]
+use alloy_evm::precompiles::Precompile;
 use alloy_evm::precompiles::PrecompilesMap;
 use alloy_op_hardforks::{OpChainHardforks, OpHardforks};
-use alloy_primitives::{Address, ChainId, map::AddressHashMap};
+#[cfg(feature = "hashkey")]
+use alloy_primitives::keccak256;
+use alloy_primitives::{Address, B256, ChainId, map::AddressHashMap};
 use clap::Parser;
-use foundry_evm_hardforks::FoundryHardfork;
+use foundry_evm_hardforks::{FoundryHardfork, TempoHardfork};
+#[cfg(feature = "hashkey")]
+use hsk_h20_config::H20Config;
+#[cfg(feature = "hashkey")]
+use hsk_h20_precompiles::{
+    ActivationRegistry, BerylLookup, H20Factory, H20Spec, H20Variant, NoopPrecompileCallObserver,
+    PolicyRegistryPrecompile,
+};
+use revm::precompile::PrecompileId;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use tempo_contracts::precompiles::{
+    ACCOUNT_KEYCHAIN_ADDRESS, ADDRESS_REGISTRY_ADDRESS, NONCE_PRECOMPILE_ADDRESS,
+    RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, STABLECOIN_DEX_ADDRESS,
+    STORAGE_CREDITS_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
+    TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS,
+    VALIDATOR_CONFIG_V2_ADDRESS,
+};
 
 pub mod celo;
+
+mod local_genesis;
+pub use local_genesis::{LocalGenesisState, ProfileGenesisTarget};
+
+/// HashKey H20 standalone local development activation admin.
+///
+/// This deterministic non-zero address is used only for standalone local simulation. It is not a
+/// production HashKey parameter.
+#[cfg(feature = "hashkey")]
+pub const HSK_H20_LOCAL_ADMIN: Address =
+    alloy_primitives::address!("CB00000000000000000000000000000000000000");
+
+/// H20 singleton addresses.
+#[cfg(feature = "hashkey")]
+mod h20_addresses {
+    use alloy_primitives::Address;
+
+    /// `H20Factory` singleton precompile address.
+    pub const H20_FACTORY: Address =
+        alloy_primitives::address!("0177FF0000000000000000000000000000000000");
+    /// `ActivationRegistry` singleton precompile address.
+    pub const H20_ACTIVATION_REGISTRY: Address =
+        alloy_primitives::address!("0177FF0000000000000000000000000000000001");
+    /// `PolicyRegistry` singleton precompile address.
+    pub const H20_POLICY_REGISTRY: Address =
+        alloy_primitives::address!("0177FF0000000000000000000000000000000002");
+}
+
+const TEMPO_PRECOMPILES: &[(&str, Address)] = &[
+    ("Nonce", NONCE_PRECOMPILE_ADDRESS),
+    ("StablecoinDex", STABLECOIN_DEX_ADDRESS),
+    ("TIP20Factory", TIP20_FACTORY_ADDRESS),
+    ("TIP403Registry", TIP403_REGISTRY_ADDRESS),
+    ("FeeManager", TIP_FEE_MANAGER_ADDRESS),
+    ("ValidatorConfig", VALIDATOR_CONFIG_ADDRESS),
+    ("ValidatorConfigV2", VALIDATOR_CONFIG_V2_ADDRESS),
+    ("AccountKeychain", ACCOUNT_KEYCHAIN_ADDRESS),
+    ("SignatureVerifier", SIGNATURE_VERIFIER_ADDRESS),
+    ("AddressRegistry", ADDRESS_REGISTRY_ADDRESS),
+    ("TIP20ChannelReserve", TIP20_CHANNEL_RESERVE_ADDRESS),
+    ("ReceivePolicyGuard", RECEIVE_POLICY_GUARD_ADDRESS),
+    ("StorageCredits", STORAGE_CREDITS_ADDRESS),
+];
+
+/// Returns whether a well-known Tempo precompile address is active at `hardfork`.
+pub fn is_tempo_precompile_active_at(address: Address, hardfork: TempoHardfork) -> bool {
+    if address == TIP20_CHANNEL_RESERVE_ADDRESS {
+        hardfork.is_t5()
+    } else if address == RECEIVE_POLICY_GUARD_ADDRESS {
+        hardfork.is_t6()
+    } else if address == STORAGE_CREDITS_ADDRESS {
+        hardfork.is_t7()
+    } else if address == ADDRESS_REGISTRY_ADDRESS || address == SIGNATURE_VERIFIER_ADDRESS {
+        hardfork.is_t3()
+    } else {
+        true
+    }
+}
+
+fn active_tempo_precompiles(
+    hardfork: Option<TempoHardfork>,
+) -> impl Iterator<Item = (&'static str, Address)> {
+    TEMPO_PRECOMPILES.iter().copied().filter(move |(_, address)| {
+        hardfork.is_none_or(|hardfork| is_tempo_precompile_active_at(*address, hardfork))
+    })
+}
+
+#[cfg(feature = "hashkey")]
+#[allow(dead_code)]
+fn hashkey_h20_type_identity_probe(
+    precompiles: &mut PrecompilesMap,
+    activation_admin: Option<Address>,
+) {
+    let _config = H20Config::DISABLED;
+    H20Factory::install_with_observer(precompiles, H20Spec::Beryl, NoopPrecompileCallObserver);
+    PolicyRegistryPrecompile::install(precompiles, H20Spec::Beryl);
+    ActivationRegistry::install(precompiles, activation_admin);
+    BerylLookup::install(precompiles);
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "lowercase")]
@@ -28,6 +128,8 @@ pub enum NetworkVariant {
     Ethereum,
     Optimism,
     Tempo,
+    #[cfg(feature = "hashkey")]
+    HashKey,
 }
 
 impl NetworkVariant {
@@ -36,6 +138,8 @@ impl NetworkVariant {
             Self::Ethereum => "ethereum",
             Self::Optimism => "optimism",
             Self::Tempo => "tempo",
+            #[cfg(feature = "hashkey")]
+            Self::HashKey => "hashkey",
         }
     }
 }
@@ -59,9 +163,446 @@ impl From<ChainId> for NetworkVariant {
     }
 }
 
+/// The base EVM semantics selected for a resolved network profile.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum EvmFamily {
+    /// Canonical Ethereum execution semantics.
+    #[default]
+    Ethereum,
+    /// OP Stack execution semantics.
+    Optimism,
+    /// Tempo execution semantics.
+    Tempo,
+}
+
+impl EvmFamily {
+    /// Returns the family name.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Ethereum => "ethereum",
+            Self::Optimism => "optimism",
+            Self::Tempo => "tempo",
+        }
+    }
+}
+
+/// The minimum runtime facts needed to project network-specific EVM semantics.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NetworkExecutionContext {
+    /// Chain ID of the executing EVM.
+    pub chain_id: ChainId,
+    /// Timestamp fixed when the EVM is created.
+    pub timestamp: u64,
+}
+
+impl NetworkExecutionContext {
+    /// Creates a new execution context.
+    pub const fn new(chain_id: ChainId, timestamp: u64) -> Self {
+        Self { chain_id, timestamp }
+    }
+}
+
+/// Canonical network-owned contract identity used by trace projections.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NetworkTraceIdentity {
+    /// HashKey H20 factory singleton.
+    #[cfg(feature = "hashkey")]
+    H20Factory,
+    /// HashKey H20 activation registry singleton.
+    #[cfg(feature = "hashkey")]
+    H20ActivationRegistry,
+    /// HashKey H20 policy registry singleton.
+    #[cfg(feature = "hashkey")]
+    H20PolicyRegistry,
+    /// HashKey H20 Asset dynamic token.
+    #[cfg(feature = "hashkey")]
+    H20Asset,
+    /// HashKey H20 Stablecoin dynamic token.
+    #[cfg(feature = "hashkey")]
+    H20Stablecoin,
+}
+
+impl NetworkTraceIdentity {
+    /// Returns the stable user-facing trace label.
+    pub const fn label(self) -> &'static str {
+        match self {
+            #[cfg(feature = "hashkey")]
+            Self::H20Factory => "H20Factory",
+            #[cfg(feature = "hashkey")]
+            Self::H20ActivationRegistry => "H20ActivationRegistry",
+            #[cfg(feature = "hashkey")]
+            Self::H20PolicyRegistry => "H20PolicyRegistry",
+            #[cfg(feature = "hashkey")]
+            Self::H20Asset => "H20Asset",
+            #[cfg(feature = "hashkey")]
+            Self::H20Stablecoin => "H20Stablecoin",
+        }
+    }
+
+    /// Returns the singleton address for fixed identities.
+    pub const fn fixed_address(self) -> Option<Address> {
+        #[cfg(feature = "hashkey")]
+        {
+            match self {
+                Self::H20Factory => Some(H20_FACTORY),
+                Self::H20ActivationRegistry => Some(H20_ACTIVATION_REGISTRY),
+                Self::H20PolicyRegistry => Some(H20_POLICY_REGISTRY),
+                Self::H20Asset | Self::H20Stablecoin => None,
+            }
+        }
+        #[cfg(not(feature = "hashkey"))]
+        match self {}
+    }
+
+    /// Returns all fixed network-owned trace identities.
+    pub const fn fixed_identities() -> &'static [Self] {
+        #[cfg(feature = "hashkey")]
+        {
+            const IDENTITIES: &[NetworkTraceIdentity] = &[
+                NetworkTraceIdentity::H20Factory,
+                NetworkTraceIdentity::H20ActivationRegistry,
+                NetworkTraceIdentity::H20PolicyRegistry,
+            ];
+            IDENTITIES
+        }
+        #[cfg(not(feature = "hashkey"))]
+        &[]
+    }
+}
+
+/// State preparation selected by a resolved network profile.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum NetworkStatePlan {
+    /// No profile-owned state preparation is required.
+    #[default]
+    None,
+    /// Apply the existing Tempo state preparation path.
+    Tempo,
+}
+
+/// Error returned when two network extensions claim the same singleton precompile address.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PrecompileCompositionError {
+    profile: &'static str,
+    address: Address,
+    existing: PrecompileId,
+    requested: Option<PrecompileId>,
+}
+
+impl PrecompileCompositionError {
+    /// Returns the profile that failed composition.
+    pub const fn profile(&self) -> &'static str {
+        self.profile
+    }
+
+    /// Returns the conflicting singleton address.
+    pub const fn address(&self) -> Address {
+        self.address
+    }
+
+    /// Returns the precompile already installed at the address.
+    pub const fn existing(&self) -> &PrecompileId {
+        &self.existing
+    }
+
+    /// Returns the precompile the profile requested, or `None` for removal.
+    pub const fn requested(&self) -> Option<&PrecompileId> {
+        self.requested.as_ref()
+    }
+}
+
+impl std::fmt::Display for PrecompileCompositionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "network profile `{}` cannot compose precompile at {}: existing `{}` conflicts with ",
+            self.profile,
+            self.address,
+            self.existing.name(),
+        )?;
+        if let Some(requested) = &self.requested {
+            write!(f, "`{}`", requested.name())
+        } else {
+            f.write_str("removal")
+        }
+    }
+}
+
+impl std::error::Error for PrecompileCompositionError {}
+
+/// Immutable runtime network semantics resolved from user configuration.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ResolvedNetworkProfile {
+    family: EvmFamily,
+    celo: bool,
+    bypass_prevrandao: bool,
+    #[cfg(feature = "hashkey")]
+    hashkey: bool,
+    #[cfg(feature = "hashkey")]
+    h20_activation_time: Option<u64>,
+    #[cfg(feature = "hashkey")]
+    h20_activation_admin: Option<Address>,
+}
+
+impl ResolvedNetworkProfile {
+    /// Returns the selected EVM family.
+    pub const fn evm_family(self) -> EvmFamily {
+        self.family
+    }
+
+    /// Returns the resolved profile name.
+    pub const fn name(self) -> &'static str {
+        #[cfg(feature = "hashkey")]
+        if self.hashkey {
+            return "hashkey";
+        }
+        if self.celo { "celo" } else { self.family.name() }
+    }
+
+    /// Returns whether the Celo extension is enabled.
+    pub const fn is_celo(self) -> bool {
+        self.celo
+    }
+
+    /// Returns whether Tempo semantics are selected.
+    pub const fn is_tempo(self) -> bool {
+        matches!(self.family, EvmFamily::Tempo)
+    }
+
+    /// Returns whether Optimism semantics are selected.
+    pub const fn is_optimism(self) -> bool {
+        matches!(self.family, EvmFamily::Optimism)
+    }
+
+    /// Returns whether the HashKey H20 extension is enabled.
+    #[cfg(feature = "hashkey")]
+    pub const fn is_hashkey(self) -> bool {
+        self.hashkey
+    }
+
+    /// Returns the H20 consensus configuration for standalone local development.
+    #[cfg(feature = "hashkey")]
+    pub fn h20_config(self) -> H20Config {
+        H20Config::new(self.h20_activation_time, self.h20_activation_admin)
+            .expect("resolved HashKey H20 config is valid")
+    }
+
+    /// Resolves an address to a network-owned trace identity for one activation snapshot.
+    ///
+    /// Dynamic H20 tokens are identified only from their canonical address variant. This does not
+    /// read mutable token metadata or imply that an uninitialized structural address has code.
+    pub fn trace_identity(
+        self,
+        address: Address,
+        context: NetworkExecutionContext,
+    ) -> Option<NetworkTraceIdentity> {
+        #[cfg(feature = "hashkey")]
+        if self.hashkey && self.h20_config().is_active_at(context.timestamp) {
+            return match address {
+                H20_FACTORY => Some(NetworkTraceIdentity::H20Factory),
+                H20_ACTIVATION_REGISTRY => Some(NetworkTraceIdentity::H20ActivationRegistry),
+                H20_POLICY_REGISTRY => Some(NetworkTraceIdentity::H20PolicyRegistry),
+                address => match H20Variant::from_address(address) {
+                    Some(H20Variant::Asset) => Some(NetworkTraceIdentity::H20Asset),
+                    Some(H20Variant::Stablecoin) => Some(NetworkTraceIdentity::H20Stablecoin),
+                    None => None,
+                },
+            };
+        }
+        let _ = (address, context);
+        None
+    }
+
+    /// Overrides the resolved H20 config for activation-boundary conformance tests.
+    #[doc(hidden)]
+    #[cfg(all(feature = "hashkey", any(test, feature = "test-utils")))]
+    pub const fn with_h20_config_for_test(mut self, config: H20Config) -> Self {
+        self.h20_activation_time = config.activation_time();
+        self.h20_activation_admin = config.activation_admin();
+        self
+    }
+
+    /// Returns whether `address` is a fixed H20 singleton owned by this profile.
+    pub const fn is_h20_singleton(self, address: Address) -> bool {
+        #[cfg(feature = "hashkey")]
+        {
+            self.is_hashkey()
+                && matches!(address, H20_FACTORY | H20_ACTIVATION_REGISTRY | H20_POLICY_REGISTRY)
+        }
+        #[cfg(not(feature = "hashkey"))]
+        {
+            let _ = (self, address);
+            false
+        }
+    }
+
+    /// Returns whether mutation cheatcodes must preserve the native H20 state at `address`.
+    pub fn protects_h20_native_state(self, address: Address, code_hash: B256) -> bool {
+        if self.is_h20_singleton(address) {
+            return true;
+        }
+
+        #[cfg(feature = "hashkey")]
+        {
+            self.is_hashkey()
+                && H20Variant::from_address(address).is_some()
+                && code_hash == keccak256([0xef])
+        }
+        #[cfg(not(feature = "hashkey"))]
+        {
+            let _ = code_hash;
+            false
+        }
+    }
+
+    /// Returns the state preparation plan for this profile.
+    pub const fn state_plan(self) -> NetworkStatePlan {
+        if self.is_tempo() { NetworkStatePlan::Tempo } else { NetworkStatePlan::None }
+    }
+
+    /// Returns the base fee parameters for this profile.
+    pub fn base_fee_params(self, timestamp: u64) -> BaseFeeParams {
+        if self.is_optimism() {
+            let op_hardforks = OpChainHardforks::op_mainnet();
+            if op_hardforks.is_canyon_active_at_timestamp(timestamp) {
+                return BaseFeeParams::optimism_canyon();
+            }
+            return BaseFeeParams::optimism();
+        }
+        BaseFeeParams::ethereum()
+    }
+
+    /// Returns whether prevrandao should be bypassed for the executing chain.
+    pub fn bypass_prevrandao(self, chain_id: u64) -> bool {
+        if let Ok(
+            Moonbeam | Moonbase | Moonriver | MoonbeamDev | Rsk | RskTestnet | Gnosis | Chiado,
+        ) = NamedChain::try_from(chain_id)
+        {
+            return true;
+        }
+        self.bypass_prevrandao
+    }
+
+    /// Injects precompiles projected by this profile.
+    pub fn inject_precompiles(
+        self,
+        precompiles: &mut PrecompilesMap,
+        _context: NetworkExecutionContext,
+    ) -> Result<(), PrecompileCompositionError> {
+        #[cfg(feature = "hashkey")]
+        if self.hashkey {
+            self.inject_h20_precompiles(precompiles, _context)?;
+        }
+        self.inject_reusable_precompiles(precompiles);
+        Ok(())
+    }
+
+    /// Installs profile precompiles that do not depend on an execution snapshot.
+    pub fn inject_reusable_precompiles(self, precompiles: &mut PrecompilesMap) {
+        if self.celo {
+            precompiles.apply_precompile(&CELO_TRANSFER_ADDRESS, move |_| {
+                Some(celo::transfer::precompile())
+            });
+        }
+    }
+
+    /// Installs H20 singletons and dynamic lookup when the activation snapshot is active.
+    #[cfg(feature = "hashkey")]
+    fn inject_h20_precompiles(
+        self,
+        precompiles: &mut PrecompilesMap,
+        context: NetworkExecutionContext,
+    ) -> Result<(), PrecompileCompositionError> {
+        let config = self.h20_config();
+        if !config.is_active_at(context.timestamp) {
+            return Ok(());
+        }
+
+        self.ensure_h20_singleton_free(precompiles, H20_FACTORY)?;
+        self.ensure_h20_singleton_free(precompiles, H20_ACTIVATION_REGISTRY)?;
+        self.ensure_h20_singleton_free(precompiles, H20_POLICY_REGISTRY)?;
+
+        H20Factory::install_with_observer(precompiles, H20Spec::Beryl, NoopPrecompileCallObserver);
+        PolicyRegistryPrecompile::install(precompiles, H20Spec::Beryl);
+        ActivationRegistry::install(precompiles, config.activation_admin());
+        precompiles.map_precompile_lookup(|address, previous| {
+            BerylLookup::lookup(address)
+                .or_else(|| previous.and_then(|lookup| lookup.lookup(address)))
+        });
+
+        Ok(())
+    }
+
+    #[cfg(feature = "hashkey")]
+    fn ensure_h20_singleton_free(
+        self,
+        precompiles: &PrecompilesMap,
+        address: Address,
+    ) -> Result<(), PrecompileCompositionError> {
+        if let Some(existing) = precompiles.get(&address) {
+            return Err(PrecompileCompositionError {
+                profile: self.name(),
+                address,
+                existing: existing.precompile_id().clone(),
+                requested: None,
+            });
+        }
+        Ok(())
+    }
+
+    /// Returns trace labels projected by this profile.
+    pub fn precompile_labels(
+        self,
+        tempo_hardfork: Option<TempoHardfork>,
+    ) -> AddressHashMap<String> {
+        let mut labels = AddressHashMap::default();
+        if self.celo {
+            labels.insert(CELO_TRANSFER_ADDRESS, CELO_TRANSFER_LABEL.to_string());
+        }
+        #[cfg(feature = "hashkey")]
+        if self.hashkey {
+            labels.insert(H20_FACTORY, "H20Factory".to_string());
+            labels.insert(H20_ACTIVATION_REGISTRY, "H20ActivationRegistry".to_string());
+            labels.insert(H20_POLICY_REGISTRY, "H20PolicyRegistry".to_string());
+        }
+        if self.is_tempo() {
+            labels.extend(
+                active_tempo_precompiles(tempo_hardfork)
+                    .map(|(label, address)| (address, label.to_string())),
+            );
+        }
+        labels
+    }
+
+    /// Returns the static precompile inventory projected by this profile.
+    pub fn precompile_inventory(
+        self,
+        tempo_hardfork: Option<TempoHardfork>,
+    ) -> BTreeMap<String, Address> {
+        let mut precompiles = BTreeMap::new();
+        if self.celo {
+            precompiles
+                .insert(PRECOMPILE_ID_CELO_TRANSFER.name().to_string(), CELO_TRANSFER_ADDRESS);
+        }
+        #[cfg(feature = "hashkey")]
+        if self.hashkey {
+            precompiles.insert("H20Factory".to_string(), H20_FACTORY);
+            precompiles.insert("H20ActivationRegistry".to_string(), H20_ACTIVATION_REGISTRY);
+            precompiles.insert("H20PolicyRegistry".to_string(), H20_POLICY_REGISTRY);
+        }
+        if self.is_tempo() {
+            precompiles.extend(
+                active_tempo_precompiles(tempo_hardfork)
+                    .map(|(label, address)| (label.to_string(), address)),
+            );
+        }
+        precompiles
+    }
+}
+
 #[derive(Clone, Debug, Default, Parser, Deserialize, Copy, PartialEq, Eq)]
 pub struct NetworkConfigs {
-    /// Enable a specific network family.
+    /// Enable a specific network profile.
     #[arg(help_heading = "Networks", long, short, num_args = 1, value_name = "NETWORK", value_enum, conflicts_with_all = ["celo", "optimism", "tempo"])]
     #[serde(default)]
     network: Option<NetworkVariant>,
@@ -114,27 +655,66 @@ impl NetworkConfigs {
         Self { network: Some(NetworkVariant::Tempo), tempo: true, ..Default::default() }
     }
 
-    pub fn is_optimism(&self) -> bool {
-        matches!(self.resolved_network(), Some(NetworkVariant::Optimism))
+    /// Selects the HashKey H20 network profile.
+    #[cfg(feature = "hashkey")]
+    pub fn with_hashkey() -> Self {
+        Self { network: Some(NetworkVariant::HashKey), ..Default::default() }
     }
 
-    pub fn is_tempo(&self) -> bool {
-        matches!(self.resolved_network(), Some(NetworkVariant::Tempo))
+    /// Returns whether a network selector or legacy network flag was explicitly configured.
+    pub const fn has_explicit_selection(&self) -> bool {
+        self.network.is_some() || self.celo || self.optimism || self.tempo
+    }
+
+    pub const fn is_optimism(&self) -> bool {
+        (*self).resolve().is_optimism()
+    }
+
+    pub const fn is_tempo(&self) -> bool {
+        (*self).resolve().is_tempo()
     }
 
     pub const fn is_celo(&self) -> bool {
         self.celo
     }
 
+    /// Resolves user configuration into immutable runtime network semantics.
+    pub const fn resolve(self) -> ResolvedNetworkProfile {
+        let network = self.resolved_network();
+        #[cfg(feature = "hashkey")]
+        let hashkey = matches!(network, Some(NetworkVariant::HashKey));
+        let family = match network {
+            None | Some(NetworkVariant::Ethereum) => EvmFamily::Ethereum,
+            Some(NetworkVariant::Optimism) => EvmFamily::Optimism,
+            Some(NetworkVariant::Tempo) => EvmFamily::Tempo,
+            #[cfg(feature = "hashkey")]
+            Some(NetworkVariant::HashKey) => EvmFamily::Optimism,
+        };
+        ResolvedNetworkProfile {
+            family,
+            celo: self.celo,
+            bypass_prevrandao: self.bypass_prevrandao,
+            #[cfg(feature = "hashkey")]
+            hashkey,
+            #[cfg(feature = "hashkey")]
+            h20_activation_time: if hashkey { Some(0) } else { None },
+            #[cfg(feature = "hashkey")]
+            h20_activation_admin: if hashkey { Some(HSK_H20_LOCAL_ADMIN) } else { None },
+        }
+    }
+
     /// Returns the resolved network variant, folding legacy flags.
-    fn resolved_network(&self) -> Option<NetworkVariant> {
-        self.network.or(if self.optimism {
-            Some(NetworkVariant::Optimism)
-        } else if self.tempo {
-            Some(NetworkVariant::Tempo)
-        } else {
-            None
-        })
+    pub const fn resolved_network(&self) -> Option<NetworkVariant> {
+        if let Some(network) = self.network {
+            return Some(network);
+        }
+        if self.optimism {
+            return Some(NetworkVariant::Optimism);
+        }
+        if self.tempo {
+            return Some(NetworkVariant::Tempo);
+        }
+        None
     }
 
     /// Returns the name of the currently active non-Ethereum network, or `None` for plain Ethereum.
@@ -150,44 +730,26 @@ impl NetworkConfigs {
     /// For Optimism networks, returns Canyon parameters if the Canyon hardfork is active
     /// at the given timestamp, otherwise returns pre-Canyon parameters.
     pub fn base_fee_params(&self, timestamp: u64) -> BaseFeeParams {
-        if self.is_optimism() {
-            let op_hardforks = OpChainHardforks::op_mainnet();
-            if op_hardforks.is_canyon_active_at_timestamp(timestamp) {
-                BaseFeeParams::optimism_canyon()
-            } else {
-                BaseFeeParams::optimism()
-            }
-        } else {
-            BaseFeeParams::ethereum()
-        }
+        self.resolve().base_fee_params(timestamp)
     }
 
     pub fn bypass_prevrandao(&self, chain_id: u64) -> bool {
-        if let Ok(
-            Moonbeam | Moonbase | Moonriver | MoonbeamDev | Rsk | RskTestnet | Gnosis | Chiado,
-        ) = NamedChain::try_from(chain_id)
-        {
-            return true;
-        }
-        self.bypass_prevrandao
+        self.resolve().bypass_prevrandao(chain_id)
     }
 
-    pub fn with_chain_id(self, chain_id: u64) -> Self {
+    /// Returns the canonical profile configuration for a known chain identity.
+    pub fn from_known_chain_id(chain_id: u64) -> Option<Self> {
         let chain = Chain::from_id(chain_id);
-        if self.resolved_network().is_none() {
-            if chain.is_tempo() {
-                Self::with_tempo()
-            } else if chain.is_optimism() {
-                Self::with_optimism()
-            } else {
-                self
-            }
-        } else if !self.celo
-            && matches!(chain.named(), Some(NamedChain::Celo | NamedChain::CeloSepolia))
-        {
-            Self::with_celo()
+        if chain.is_tempo() {
+            Some(Self::with_tempo())
+        } else if matches!(chain.named(), Some(NamedChain::Celo | NamedChain::CeloSepolia)) {
+            Some(Self::with_celo())
+        } else if chain.is_optimism() {
+            Some(Self::with_optimism())
+        } else if chain.is_ethereum() {
+            Some(Self::default())
         } else {
-            self
+            None
         }
     }
 
@@ -196,9 +758,14 @@ impl NetworkConfigs {
     ///
     /// Returns `Err` when the hardfork's network family conflicts with the configured one.
     pub fn normalize_for_hardfork(self, hardfork: FoundryHardfork) -> Result<Self, String> {
-        if let Some(configured) =
-            self.active_network_name().filter(|&n| Some(n) != hardfork.namespace())
-        {
+        let hardfork_namespace = hardfork.namespace();
+        if let Some(configured) = self.active_network_name().filter(|&name| {
+            #[cfg(feature = "hashkey")]
+            if name == "hashkey" && hardfork_namespace == Some("optimism") {
+                return false;
+            }
+            Some(name) != hardfork_namespace
+        }) {
             return Err(format!(
                 "hardfork `{}` conflicts with network config `{configured}`",
                 String::from(hardfork),
@@ -208,7 +775,13 @@ impl NetworkConfigs {
         let network = match hardfork {
             FoundryHardfork::Ethereum(_) => self,
             FoundryHardfork::Tempo(_) => Self::with_tempo(),
-            FoundryHardfork::Optimism(_) => Self::with_optimism(),
+            FoundryHardfork::Optimism(_) => {
+                #[cfg(feature = "hashkey")]
+                if matches!(self.resolved_network(), Some(NetworkVariant::HashKey)) {
+                    return Ok(self);
+                }
+                Self::with_optimism()
+            }
         };
 
         Ok(network)
@@ -216,11 +789,9 @@ impl NetworkConfigs {
 
     /// Inject precompiles for configured networks.
     pub fn inject_precompiles(self, precompiles: &mut PrecompilesMap) {
-        if self.celo {
-            precompiles.apply_precompile(&CELO_TRANSFER_ADDRESS, move |_| {
-                Some(celo::transfer::precompile())
-            });
-        }
+        self.resolve()
+            .inject_precompiles(precompiles, NetworkExecutionContext::default())
+            .expect("legacy network precompile composition is infallible");
     }
 
     /// Returns precompiles label for configured networks, to be used in traces.
@@ -243,9 +814,303 @@ impl NetworkConfigs {
     }
 }
 
+impl From<NetworkVariant> for NetworkConfigs {
+    fn from(network: NetworkVariant) -> Self {
+        match network {
+            NetworkVariant::Ethereum => {
+                Self { network: Some(NetworkVariant::Ethereum), ..Default::default() }
+            }
+            NetworkVariant::Optimism => {
+                Self { network: Some(network), optimism: true, ..Default::default() }
+            }
+            NetworkVariant::Tempo => {
+                Self { network: Some(network), tempo: true, ..Default::default() }
+            }
+            #[cfg(feature = "hashkey")]
+            NetworkVariant::HashKey => Self { network: Some(network), ..Default::default() },
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use revm::precompile::Precompiles;
+
+    #[cfg(feature = "hashkey")]
+    #[test]
+    fn hashkey_h20_packages_share_precompiles_map_type() {
+        let mut precompiles = PrecompilesMap::from_static(Precompiles::cancun());
+        hashkey_h20_type_identity_probe(&mut precompiles, None);
+    }
+
+    #[test]
+    fn resolves_configuration_into_runtime_profile() {
+        let ethereum = NetworkConfigs::default().resolve();
+        assert_eq!(ethereum.evm_family(), EvmFamily::Ethereum);
+        assert_eq!(ethereum.name(), "ethereum");
+        assert_eq!(ethereum.state_plan(), NetworkStatePlan::None);
+
+        let celo = NetworkConfigs::with_celo().resolve();
+        assert_eq!(celo.evm_family(), EvmFamily::Ethereum);
+        assert_eq!(celo.name(), "celo");
+        assert!(celo.is_celo());
+        assert_eq!(
+            celo.precompile_inventory(None).get(PRECOMPILE_ID_CELO_TRANSFER.name()),
+            Some(&CELO_TRANSFER_ADDRESS)
+        );
+        assert_eq!(
+            celo.precompile_labels(None).get(&CELO_TRANSFER_ADDRESS),
+            Some(&CELO_TRANSFER_LABEL.to_string())
+        );
+
+        let tempo = NetworkConfigs::with_tempo().resolve();
+        assert_eq!(tempo.evm_family(), EvmFamily::Tempo);
+        assert_eq!(tempo.name(), "tempo");
+        assert_eq!(tempo.state_plan(), NetworkStatePlan::Tempo);
+        let tip20_factory = alloy_primitives::address!("20FC000000000000000000000000000000000000");
+        assert_eq!(tempo.precompile_inventory(None).get("TIP20Factory"), Some(&tip20_factory));
+        assert_eq!(
+            tempo.precompile_labels(None).get(&tip20_factory),
+            Some(&"TIP20Factory".to_string())
+        );
+
+        let optimism = NetworkConfigs::with_optimism().resolve();
+        assert_eq!(optimism.evm_family(), EvmFamily::Optimism);
+        assert_eq!(optimism.name(), "optimism");
+    }
+
+    #[test]
+    fn profile_precompile_projection_preserves_celo_behavior() {
+        let mut precompiles = PrecompilesMap::from_static(Precompiles::cancun());
+        let profile = NetworkConfigs::with_celo().resolve();
+        profile.inject_precompiles(&mut precompiles, NetworkExecutionContext::new(1, 0)).unwrap();
+
+        assert!(precompiles.get(&CELO_TRANSFER_ADDRESS).is_some());
+
+        let mut reusable = PrecompilesMap::from_static(Precompiles::cancun());
+        profile.inject_reusable_precompiles(&mut reusable);
+        assert!(reusable.get(&CELO_TRANSFER_ADDRESS).is_some());
+    }
+
+    #[test]
+    fn legacy_tempo_projection_entry_points_remain_unchanged() {
+        let configs = NetworkConfigs::with_tempo();
+        assert!(configs.precompiles_label().is_empty());
+        assert!(configs.precompiles().is_empty());
+    }
+
+    #[test]
+    fn tempo_profile_filters_precompile_projection_by_hardfork() {
+        let profile = NetworkConfigs::with_tempo().resolve();
+
+        assert!(
+            !profile.precompile_inventory(Some(TempoHardfork::T2)).contains_key("AddressRegistry")
+        );
+        assert!(
+            profile.precompile_inventory(Some(TempoHardfork::T3)).contains_key("AddressRegistry")
+        );
+        assert!(
+            !profile
+                .precompile_inventory(Some(TempoHardfork::T4))
+                .contains_key("TIP20ChannelReserve")
+        );
+        assert!(
+            profile
+                .precompile_inventory(Some(TempoHardfork::T5))
+                .contains_key("TIP20ChannelReserve")
+        );
+        assert!(
+            !profile
+                .precompile_labels(Some(TempoHardfork::T6))
+                .contains_key(&STORAGE_CREDITS_ADDRESS)
+        );
+        assert!(
+            profile
+                .precompile_labels(Some(TempoHardfork::T7))
+                .contains_key(&STORAGE_CREDITS_ADDRESS)
+        );
+    }
+
+    #[cfg(feature = "hashkey")]
+    #[test]
+    fn hashkey_selector_resolves_optimism_h20_profile() {
+        let configs = NetworkConfigs::parse_from(["test", "--network", "hashkey"]);
+        let profile = configs.resolve();
+
+        assert_eq!(profile.evm_family(), EvmFamily::Optimism);
+        assert_eq!(profile.name(), "hashkey");
+        assert!(profile.is_optimism());
+        assert!(profile.is_hashkey());
+        assert_eq!(profile.state_plan(), NetworkStatePlan::None);
+
+        let h20_config = profile.h20_config();
+        assert_eq!(h20_config.activation_time(), Some(0));
+        assert_eq!(h20_config.activation_admin(), Some(HSK_H20_LOCAL_ADMIN));
+    }
+
+    #[cfg(feature = "hashkey")]
+    #[test]
+    fn hashkey_profile_classifies_protected_h20_native_state() {
+        let profile = NetworkConfigs::with_hashkey().resolve();
+        let dynamic = H20Variant::Asset
+            .compute_address(Address::repeat_byte(0x11), B256::repeat_byte(0x22))
+            .0;
+
+        assert!(profile.is_h20_singleton(H20_FACTORY));
+        assert!(profile.protects_h20_native_state(H20_ACTIVATION_REGISTRY, B256::ZERO));
+        assert!(profile.protects_h20_native_state(dynamic, keccak256([0xef])));
+        assert!(!profile.protects_h20_native_state(dynamic, alloy_primitives::KECCAK256_EMPTY));
+        assert!(!profile.protects_h20_native_state(Address::repeat_byte(0x22), keccak256([0xef])));
+        assert!(!NetworkConfigs::default().resolve().is_h20_singleton(H20_FACTORY));
+    }
+
+    #[cfg(feature = "hashkey")]
+    #[test]
+    fn hashkey_trace_identity_follows_activation_snapshot() {
+        let config = H20Config::new(Some(100), Some(Address::repeat_byte(0x11))).unwrap();
+        let profile = NetworkConfigs::with_hashkey().resolve().with_h20_config_for_test(config);
+        let asset = H20Variant::Asset
+            .compute_address(Address::repeat_byte(0x22), B256::repeat_byte(0x33))
+            .0;
+
+        assert_eq!(profile.trace_identity(asset, NetworkExecutionContext::new(177, 99)), None);
+        assert_eq!(
+            profile.trace_identity(asset, NetworkExecutionContext::new(177, 100)),
+            Some(NetworkTraceIdentity::H20Asset)
+        );
+        assert_eq!(
+            profile.trace_identity(asset, NetworkExecutionContext::new(177, 101)),
+            Some(NetworkTraceIdentity::H20Asset)
+        );
+        assert_eq!(
+            profile.trace_identity(H20_FACTORY, NetworkExecutionContext::new(177, 100)),
+            Some(NetworkTraceIdentity::H20Factory)
+        );
+        assert_eq!(NetworkTraceIdentity::H20Factory.fixed_address(), Some(H20_FACTORY));
+        assert_eq!(NetworkTraceIdentity::H20Asset.fixed_address(), None);
+        assert_eq!(NetworkTraceIdentity::fixed_identities().len(), 3);
+        assert_eq!(
+            NetworkConfigs::with_optimism()
+                .resolve()
+                .trace_identity(asset, NetworkExecutionContext::new(177, 100)),
+            None
+        );
+    }
+
+    #[cfg(feature = "hashkey")]
+    #[test]
+    fn optimism_hardfork_preserves_hashkey_selector() {
+        let configs = NetworkConfigs::with_hashkey()
+            .normalize_for_hardfork(FoundryHardfork::Optimism(
+                alloy_op_hardforks::OpHardfork::Bedrock,
+            ))
+            .unwrap();
+
+        assert!(configs.resolve().is_hashkey());
+    }
+
+    #[cfg(feature = "hashkey")]
+    #[test]
+    fn hashkey_capability_requires_runtime_selection() {
+        const H20_FACTORY: Address =
+            alloy_primitives::address!("0177FF0000000000000000000000000000000000");
+
+        let ethereum = NetworkConfigs::default().resolve();
+        assert!(!ethereum.is_hashkey());
+        assert_eq!(ethereum.h20_config().activation_time(), None);
+        assert_eq!(ethereum.h20_config().activation_admin(), None);
+
+        let optimism = NetworkConfigs::with_optimism().resolve();
+        assert!(!optimism.is_hashkey());
+        assert_eq!(optimism.h20_config().activation_time(), None);
+        assert_eq!(optimism.h20_config().activation_admin(), None);
+        let mut precompiles = PrecompilesMap::from_static(Precompiles::prague());
+        optimism
+            .inject_precompiles(&mut precompiles, NetworkExecutionContext::new(177, 0))
+            .unwrap();
+        assert!(precompiles.get(&H20_FACTORY).is_none());
+
+        let configs = NetworkConfigs::with_hashkey();
+        assert!(configs.is_optimism());
+        assert!(configs.resolve().is_hashkey());
+    }
+
+    #[cfg(feature = "hashkey")]
+    #[test]
+    fn hashkey_selector_roundtrips_as_canonical_network() {
+        let json = serde_json::to_value(NetworkConfigs::with_hashkey()).unwrap();
+        assert_eq!(json["network"], serde_json::json!("hashkey"));
+
+        let restored = serde_json::from_value::<NetworkConfigs>(json).unwrap();
+        assert!(restored.resolve().is_hashkey());
+    }
+
+    #[cfg(feature = "hashkey")]
+    #[test]
+    fn hashkey_profile_projects_active_h20_precompiles() {
+        const H20_FACTORY: Address =
+            alloy_primitives::address!("0177FF0000000000000000000000000000000000");
+        const H20_ACTIVATION_REGISTRY: Address =
+            alloy_primitives::address!("0177FF0000000000000000000000000000000001");
+        const H20_POLICY_REGISTRY: Address =
+            alloy_primitives::address!("0177FF0000000000000000000000000000000002");
+
+        let profile = NetworkConfigs::with_hashkey().resolve();
+        let mut precompiles = PrecompilesMap::from_static(Precompiles::prague());
+        profile.inject_precompiles(&mut precompiles, NetworkExecutionContext::new(177, 0)).unwrap();
+
+        assert!(precompiles.get(&H20_FACTORY).is_some());
+        assert!(precompiles.get(&H20_ACTIVATION_REGISTRY).is_some());
+        assert!(precompiles.get(&H20_POLICY_REGISTRY).is_some());
+
+        let mut reusable = PrecompilesMap::from_static(Precompiles::prague());
+        profile.inject_reusable_precompiles(&mut reusable);
+        assert!(reusable.get(&H20_FACTORY).is_none());
+        assert!(reusable.get(&H20_ACTIVATION_REGISTRY).is_none());
+        assert!(reusable.get(&H20_POLICY_REGISTRY).is_none());
+
+        let labels = profile.precompile_labels(None);
+        assert_eq!(labels.get(&H20_FACTORY), Some(&"H20Factory".to_string()));
+        assert_eq!(
+            labels.get(&H20_ACTIVATION_REGISTRY),
+            Some(&"H20ActivationRegistry".to_string())
+        );
+        assert_eq!(labels.get(&H20_POLICY_REGISTRY), Some(&"H20PolicyRegistry".to_string()));
+
+        let inventory = profile.precompile_inventory(None);
+        assert_eq!(inventory.get("H20Factory"), Some(&H20_FACTORY));
+        assert_eq!(inventory.get("H20ActivationRegistry"), Some(&H20_ACTIVATION_REGISTRY));
+        assert_eq!(inventory.get("H20PolicyRegistry"), Some(&H20_POLICY_REGISTRY));
+    }
+
+    #[cfg(feature = "hashkey")]
+    #[test]
+    fn hashkey_profile_rejects_singleton_collision() {
+        const H20_FACTORY: Address =
+            alloy_primitives::address!("0177FF0000000000000000000000000000000000");
+
+        let conflicting_id = PrecompileId::Custom(std::borrow::Cow::Borrowed("conflict-test"));
+        let mut precompiles = PrecompilesMap::from_static(Precompiles::prague());
+        precompiles.apply_precompile(&H20_FACTORY, {
+            let conflicting_id = conflicting_id.clone();
+            move |_| {
+                Some(alloy_evm::precompiles::DynPrecompile::new(conflicting_id, |_| {
+                    unreachable!("not executed")
+                }))
+            }
+        });
+
+        let err = NetworkConfigs::with_hashkey()
+            .resolve()
+            .inject_precompiles(&mut precompiles, NetworkExecutionContext::new(177, 0))
+            .unwrap_err();
+
+        assert_eq!(err.profile(), "hashkey");
+        assert_eq!(err.address(), H20_FACTORY);
+        assert_eq!(err.existing(), &conflicting_id);
+        assert_eq!(err.requested(), None);
+    }
 
     // --- Equivalence: new flag == legacy flag ---
 

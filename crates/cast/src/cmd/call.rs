@@ -39,9 +39,16 @@ use foundry_evm::{
         evm::{EthEvmNetwork, FoundryEvmNetwork, OpEvmNetwork, TempoEvmNetwork},
     },
     executors::TracingExecutor,
-    opts::EvmOpts,
+    opts::{
+        EvmOpts,
+        resolution::{
+            CommandProfileResolution, NetworkIntent, NetworkRequirementSource, ProfileKind,
+            ResolvedEvmOpts, RpcForkIdentitySource,
+        },
+    },
     traces::{InternalTraceMode, TraceMode},
 };
+use foundry_evm_networks::EvmFamily;
 use foundry_wallets::WalletOpts;
 use regex::Regex;
 use std::{str::FromStr, sync::LazyLock};
@@ -221,27 +228,36 @@ impl CallArgs {
         if self.rpc.curl {
             return self.run_curl().await;
         }
+        let figment = self.rpc.clone().into_figment(self.with_local_artifacts).merge(&self);
+        let evm_opts = figment.extract::<EvmOpts>()?;
+        let fork_identity = RpcForkIdentitySource::from_evm_opts(&evm_opts);
+        let mut intent = NetworkIntent::new();
         if self.tx.tempo.is_tempo() {
-            self.run_with_network::<TempoEvmNetwork>().await
-        } else {
-            let figment = self.rpc.clone().into_figment(self.with_local_artifacts).merge(&self);
-            let mut evm_opts = figment.extract::<EvmOpts>()?;
-            evm_opts.infer_network_from_fork().await;
+            intent = intent
+                .require_profile(ProfileKind::Tempo, NetworkRequirementSource::TempoTransaction);
+        }
+        if let Some(chain) = self.chain {
+            intent = intent.with_chain_hint(chain.id());
+        }
+        let resolved = CommandProfileResolution::with_fork_identity_source(fork_identity)
+            .resolve_evm_opts_async(evm_opts, intent)
+            .await?;
 
-            if evm_opts.networks.is_optimism() {
-                self.run_with_network::<OpEvmNetwork>().await
-            } else {
-                self.run_with_network::<EthEvmNetwork>().await
-            }
+        match resolved.network_profile().evm_family() {
+            EvmFamily::Ethereum => self.run_with_network::<EthEvmNetwork>(resolved).await,
+            EvmFamily::Optimism => self.run_with_network::<OpEvmNetwork>(resolved).await,
+            EvmFamily::Tempo => self.run_with_network::<TempoEvmNetwork>(resolved).await,
         }
     }
 
-    pub async fn run_with_network<FEN: FoundryEvmNetwork>(self) -> Result<()>
+    pub async fn run_with_network<FEN: FoundryEvmNetwork>(
+        self,
+        resolved: ResolvedEvmOpts,
+    ) -> Result<()>
     where
         <FEN::Network as Network>::TransactionRequest: FoundryTransactionBuilder<FEN::Network>,
     {
         let figment = self.rpc.clone().into_figment(self.with_local_artifacts).merge(&self);
-        let evm_opts = figment.extract::<EvmOpts>()?;
         let mut config = Config::from_provider(figment)?.sanitized();
         let state_overrides = self.get_state_overrides()?;
         let block_overrides = self.get_block_overrides()?;
@@ -306,24 +322,24 @@ impl CallArgs {
                 config.fork_block_number = Some(block_number);
             }
 
-            let create2_deployer = evm_opts.create2_deployer;
-            let (mut evm_env, tx_env, fork, chain, networks) =
-                TracingExecutor::<FEN>::get_fork_material(&mut config, evm_opts).await?;
+            let create2_deployer = resolved.evm_opts().create2_deployer;
+            let (mut prepared, _) = TracingExecutor::<FEN>::prepare(&mut config, resolved).await?;
+            prepared.configure_env(|evm_env, _| {
+                // modify settings that usually set in eth_call
+                evm_env.cfg_env.disable_block_gas_limit = true;
+                evm_env.cfg_env.tx_gas_limit_cap = Some(u64::MAX);
+                evm_env.block_env.set_gas_limit(u64::MAX);
 
-            // modify settings that usually set in eth_call
-            evm_env.cfg_env.disable_block_gas_limit = true;
-            evm_env.cfg_env.tx_gas_limit_cap = Some(u64::MAX);
-            evm_env.block_env.set_gas_limit(u64::MAX);
-
-            // Apply the block overrides.
-            if let Some(block_overrides) = block_overrides {
-                if let Some(number) = block_overrides.number {
-                    evm_env.block_env.set_number(number.to());
+                // Apply the block overrides.
+                if let Some(block_overrides) = block_overrides {
+                    if let Some(number) = block_overrides.number {
+                        evm_env.block_env.set_number(number.to());
+                    }
+                    if let Some(time) = block_overrides.time {
+                        evm_env.block_env.set_timestamp(U256::from(time));
+                    }
                 }
-                if let Some(time) = block_overrides.time {
-                    evm_env.block_env.set_timestamp(U256::from(time));
-                }
-            }
+            });
 
             let trace_mode = TraceMode::Call
                 .with_debug(debug)
@@ -334,11 +350,9 @@ impl CallArgs {
                 })
                 .with_state_changes(shell::verbosity() > 4);
             let mut executor = TracingExecutor::<FEN>::new(
-                (evm_env, tx_env),
-                fork,
+                prepared,
                 evm_version,
                 trace_mode,
-                networks,
                 create2_deployer,
                 state_overrides,
             )?;
@@ -397,8 +411,8 @@ impl CallArgs {
             let contracts_bytecode = fetch_contracts_bytecode_from_trace(&executor, &trace)?;
             handle_traces(
                 trace,
+                &executor,
                 &config,
-                chain,
                 &contracts_bytecode,
                 labels,
                 with_local_artifacts,

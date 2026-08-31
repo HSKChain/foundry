@@ -6722,6 +6722,31 @@ mod tests {
         });
     }
 
+    #[cfg(feature = "hashkey")]
+    #[test]
+    fn hashkey_network_field_resolves_without_warning() {
+        figment::Jail::expect_with(|jail| {
+            jail.create_file(
+                "foundry.toml",
+                r#"
+                [profile.default]
+                network = "hashkey"
+                "#,
+            )?;
+
+            let config = Config::load().unwrap();
+            assert!(config.networks.resolve().is_hashkey());
+            assert!(
+                !config.warnings.iter().any(
+                    |warning| matches!(warning, crate::Warning::UnknownKey { key, .. } if key == "network")
+                ),
+                "did not expect UnknownKey warning for `network`, got: {:?}",
+                config.warnings
+            );
+            Ok(())
+        });
+    }
+
     #[test]
     fn no_unknown_key_warning_for_legacy_tempo_alias() {
         // Regression test: the legacy `tempo = true` alias must keep working without warnings.

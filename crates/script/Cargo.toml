@@ -62,3 +62,12 @@ tempo-primitives.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+
+[features]
+hashkey = [
+    "forge-verify/hashkey",
+    "foundry-cli/hashkey",
+    "foundry-config/hashkey",
+    "foundry-evm-networks/hashkey",
+    "foundry-evm/hashkey",
+]

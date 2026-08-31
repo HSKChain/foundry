@@ -364,6 +364,7 @@ fn create_fork_request<FEN: FoundryEvmNetwork>(
             && ccx.state.config.rpc_storage_caching.enable_for_endpoint(&url),
         url,
         evm_opts,
+        network_profile: ccx.ecx.db().network_profile(),
     };
     Ok(fork)
 }

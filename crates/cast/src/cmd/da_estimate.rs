@@ -9,7 +9,7 @@ use eyre::Result;
 use foundry_cli::{opts::RpcOpts, utils::LoadConfig};
 use foundry_common::provider::ProviderBuilder;
 use foundry_config::Config;
-use foundry_evm_networks::NetworkVariant;
+use foundry_evm_networks::{EvmFamily, NetworkConfigs, NetworkVariant};
 use op_alloy_network::Optimism;
 
 /// CLI arguments for `cast da-estimate`.
@@ -36,10 +36,10 @@ impl DAEstimateArgs {
                 provider.get_chain_id().await?.into()
             }
         };
-        match network {
-            NetworkVariant::Optimism => da_estimate::<Optimism>(&config, block).await,
-            NetworkVariant::Ethereum => da_estimate::<Ethereum>(&config, block).await,
-            NetworkVariant::Tempo => Err(eyre::eyre!(
+        match NetworkConfigs::from(network).resolve().evm_family() {
+            EvmFamily::Optimism => da_estimate::<Optimism>(&config, block).await,
+            EvmFamily::Ethereum => da_estimate::<Ethereum>(&config, block).await,
+            EvmFamily::Tempo => Err(eyre::eyre!(
                 "DA estimation is not supported for Tempo: EIP-4844 blob transactions are not available on this network"
             )),
         }

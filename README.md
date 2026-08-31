@@ -43,6 +43,50 @@ See the [installation guide](https://getfoundry.sh/getting-started/installation)
 
 To verify a downloaded release archive or container image, see [Verifying Releases](./SECURITY.md#verifying-releases).
 
+### HashKey H20 local profile
+
+HSKChain release archives keep Foundry's standard `forge`, `cast`, `anvil`, and `chisel` binary
+names. The HSKChain installer exposes them through namespaced wrappers so they can coexist with a
+stock Foundry installation:
+
+```sh
+curl -L https://raw.githubusercontent.com/HSKChain/foundry/HEAD/foundryup/install | bash
+hsk-foundryup --install v1.7.1-hsk-h20
+```
+
+This installs `hsk-forge`, `hsk-cast`, `hsk-anvil`, and `hsk-chisel` without replacing
+`foundryup` or the stock commands. The same release can be built from its tag and registered under
+the namespaced commands:
+
+```sh
+git clone https://github.com/HSKChain/foundry.git foundry-hsk
+cd foundry-hsk
+git checkout v1.7.1-hsk-h20
+hsk-foundryup --path "$PWD"
+```
+
+Select the standalone local profile explicitly:
+
+```sh
+hsk-anvil --network hashkey
+hsk-forge test --network hashkey
+hsk-cast call --rpc-url http://127.0.0.1:8545 ADDRESS "function()"
+hsk-cast run --network hashkey --rpc-url http://127.0.0.1:8545 TRANSACTION_HASH
+hsk-chisel --network hashkey
+```
+
+Or make it the project default in `foundry.toml`:
+
+```toml
+[profile.default]
+network = "hashkey"
+```
+
+This profile provides deterministic **local-development** H20 state. Its activation time, admin,
+and feature state are not HashKey mainnet or testnet parameters. See the
+[HashKey H20 local simulation guide](./docs/hashkey-h20.md) and
+[configuration reference](./docs/hashkey-h20-config.md) before using it.
+
 ## Getting Started
 
 Initialize a new project, build and test:

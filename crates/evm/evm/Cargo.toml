@@ -27,6 +27,7 @@ foundry-evm-networks.workspace = true
 foundry-evm-traces.workspace = true
 
 alloy-dyn-abi = { workspace = true, features = ["arbitrary", "eip712"] }
+alloy-evm.workspace = true
 alloy-json-abi.workspace = true
 alloy-primitives = { workspace = true, features = [
     "serde",
@@ -61,3 +62,15 @@ serde.workspace = true
 uuid.workspace = true
 rayon.workspace = true
 tokio.workspace = true
+
+[dev-dependencies]
+foundry-evm-networks = { workspace = true, features = ["test-utils"] }
+hsk-h20-config.workspace = true
+
+[features]
+hashkey = [
+    "foundry-config/hashkey",
+    "foundry-evm-core/hashkey",
+    "foundry-evm-networks/hashkey",
+    "foundry-evm-traces/hashkey",
+]

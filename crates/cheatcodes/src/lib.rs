@@ -127,6 +127,24 @@ impl<'db, FEN: FoundryEvmNetwork> std::ops::DerefMut for CheatsCtxt<'_, 'db, FEN
 }
 
 impl<FEN: FoundryEvmNetwork> CheatsCtxt<'_, '_, FEN> {
+    pub(crate) fn ensure_loadable_account(&self, address: &Address) -> Result<()> {
+        if self.ecx.db().network_profile().is_h20_singleton(*address) {
+            Ok(())
+        } else {
+            self.ensure_not_precompile(address)
+        }
+    }
+
+    pub(crate) fn ensure_mutable_account(&mut self, address: &Address) -> Result<()> {
+        let profile = self.ecx.db().network_profile();
+        let code_hash = self.ecx.journal_mut().load_account(*address)?.data.info.code_hash;
+        if profile.protects_h20_native_state(*address, code_hash) {
+            Err(fmt_err!("cannot mutate protected H20 native state at {address}"))
+        } else {
+            self.ensure_not_precompile(address)
+        }
+    }
+
     pub(crate) fn ensure_not_precompile(&self, address: &Address) -> Result<()> {
         if self.is_precompile(address) { Err(precompile_error(address)) } else { Ok(()) }
     }

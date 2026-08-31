@@ -14,7 +14,7 @@ use revm::context::{Block, Transaction};
 /// [`InspectorStack`]: super::InspectorStack
 #[derive(Debug, Clone)]
 #[must_use = "builders do nothing unless you call `build` on them"]
-pub struct ExecutorBuilder<FEN: FoundryEvmNetwork> {
+pub(crate) struct ExecutorBuilder<FEN: FoundryEvmNetwork> {
     /// The configuration used to build an `InspectorStack`.
     stack: InspectorStackBuilder<BlockEnvFor<FEN>>,
     /// The gas limit.

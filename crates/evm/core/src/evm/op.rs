@@ -1,5 +1,6 @@
 use alloy_evm::{Evm, EvmEnv, EvmFactory, precompiles::PrecompilesMap};
 use alloy_op_evm::{OpEvm, OpEvmContext, OpEvmFactory, OpTx};
+use foundry_evm_networks::NetworkExecutionContext;
 use foundry_fork_db::DatabaseError;
 use op_revm::{OpEvm as RevmEvm, OpHaltReason, OpSpecId, OpTransactionError, handler::OpHandler};
 use revm::{
@@ -42,9 +43,18 @@ impl FoundryEvmFactory for OpEvmFactory {
         evm_env: EvmEnv<Self::Spec, Self::BlockEnv>,
         inspector: I,
     ) -> Self::FoundryEvm<'db, I> {
+        let chain_id = evm_env.cfg_env.chain_id;
+        let timestamp = evm_env.block_env.timestamp.saturating_to();
         let mut op_evm = Self::default().create_evm_with_inspector(db, evm_env, inspector);
         op_evm.cfg.tx_chain_id_check = true;
-        op_evm.inspector().get_networks().inject_precompiles(op_evm.precompiles_mut());
+        op_evm
+            .inspector()
+            .get_network_profile()
+            .inject_precompiles(
+                op_evm.precompiles_mut(),
+                NetworkExecutionContext::new(chain_id, timestamp),
+            )
+            .expect("resolved network profile precompile composition must be compatible");
         op_evm
     }
 
@@ -82,6 +92,7 @@ impl<'db, I: FoundryInspectorExt<OpEvmContext<&'db mut dyn DatabaseExt<OpEvmFact
 
     fn run_execution(&mut self, frame: FrameInput) -> Result<FrameResult, EVMError<DatabaseError>> {
         let mut handler = OpEvmHandler::<I>::new();
+        let reservoir = frame.reservoir();
 
         let memory =
             SharedMemory::new_with_buffer(self.ctx_ref().local().shared_memory_buffer().clone());
@@ -90,7 +101,7 @@ impl<'db, I: FoundryInspectorExt<OpEvmContext<&'db mut dyn DatabaseExt<OpEvmFact
         let mut frame_result =
             handler.inspect_run_exec_loop(self, first_frame_input).map_err(map_op_error)?;
 
-        handler.last_frame_result(self, &mut frame_result).map_err(map_op_error)?;
+        handler.last_frame_result(self, reservoir, &mut frame_result).map_err(map_op_error)?;
 
         Ok(frame_result)
     }

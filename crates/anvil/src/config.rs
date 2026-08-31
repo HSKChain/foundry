@@ -60,7 +60,10 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_chainspec::{
+    hardfork::TempoHardfork,
+    spec::{TEMPO_T0_BASE_FEE, TEMPO_T1_BASE_FEE},
+};
 use tokio::sync::RwLock as TokioRwLock;
 use yansi::Paint;
 
@@ -69,7 +72,7 @@ use foundry_evm::{
     traces::{CallTraceDecoderBuilder, identifier::SignaturesIdentifier},
     utils::get_blob_params,
 };
-use foundry_evm_networks::NetworkConfigs;
+use foundry_evm_networks::{NetworkConfigs, ProfileGenesisTarget, ResolvedNetworkProfile};
 
 /// Default port the rpc will open
 pub const NODE_PORT: u16 = 8545;
@@ -529,8 +532,14 @@ impl NodeConfig {
     ///
     /// In Tempo mode, uses the hardfork-specific base fee (10 gwei pre-T1, 20 gwei T1+).
     pub fn get_base_fee(&self) -> u64 {
-        let default = if self.networks.is_tempo() {
-            TempoHardfork::from(self.get_hardfork()).base_fee()
+        self.get_base_fee_for_profile(self.networks.resolve())
+    }
+
+    fn get_base_fee_for_profile(&self, network_profile: ResolvedNetworkProfile) -> u64 {
+        let default = if network_profile.is_tempo() {
+            tempo_default_base_fee(TempoHardfork::from(
+                self.get_hardfork_for_profile(network_profile),
+            ))
         } else {
             INITIAL_BASE_FEE
         };
@@ -543,8 +552,14 @@ impl NodeConfig {
     ///
     /// In Tempo mode, defaults to the hardfork-specific base fee.
     pub fn get_gas_price(&self) -> u128 {
-        let default = if self.networks.is_tempo() {
-            TempoHardfork::from(self.get_hardfork()).base_fee() as u128
+        self.get_gas_price_for_profile(self.networks.resolve())
+    }
+
+    fn get_gas_price_for_profile(&self, network_profile: ResolvedNetworkProfile) -> u128 {
+        let default = if network_profile.is_tempo() {
+            tempo_default_base_fee(TempoHardfork::from(
+                self.get_hardfork_for_profile(network_profile),
+            )) as u128
         } else {
             INITIAL_GAS_PRICE
         };
@@ -574,13 +589,20 @@ impl NodeConfig {
 
     /// Returns the hardfork to use
     pub fn get_hardfork(&self) -> FoundryHardfork {
+        self.get_hardfork_for_profile(self.networks.resolve())
+    }
+
+    pub(crate) fn get_hardfork_for_profile(
+        &self,
+        network_profile: ResolvedNetworkProfile,
+    ) -> FoundryHardfork {
         if let Some(hardfork) = self.hardfork {
             return hardfork;
         }
-        if self.networks.is_optimism() {
+        if network_profile.is_optimism() {
             return OpHardfork::default().into();
         }
-        if self.networks.is_tempo() {
+        if network_profile.is_tempo() {
             return TempoHardfork::default().into();
         }
         EthereumHardfork::default().into()
@@ -631,10 +653,12 @@ impl NodeConfig {
     }
 
     /// Sets the chain id and updates all wallets
+    ///
+    /// The chain selection is an execution-chain update only; network profile inference is
+    /// owned by the canonical command resolution layer and must not be mutated here.
     pub fn set_chain_id(&mut self, chain_id: Option<impl Into<u64>>) {
         self.chain_id = chain_id.map(Into::into);
         let chain_id = self.get_chain_id();
-        self.networks.with_chain_id(chain_id);
         self.genesis_accounts.iter_mut().for_each(|wallet| {
             *wallet = wallet.clone().with_chain_id(Some(chain_id));
         });
@@ -1119,9 +1143,10 @@ impl NodeConfig {
             >,
     {
         // configure the revm environment
+        let network_profile = self.networks.resolve();
 
         let mut cfg = CfgEnv::default();
-        cfg.spec = self.get_hardfork().into();
+        cfg.spec = self.get_hardfork_for_profile(network_profile).into();
 
         cfg.chain_id = self.get_chain_id();
         cfg.limit_contract_code_size = self.code_size_limit;
@@ -1144,30 +1169,33 @@ impl NodeConfig {
             cfg,
             BlockEnv {
                 gas_limit: self.gas_limit(),
-                basefee: self.get_base_fee(),
+                basefee: self.get_base_fee_for_profile(network_profile),
                 ..Default::default()
             },
         );
 
         let base_fee_params: BaseFeeParams =
-            self.networks.base_fee_params(self.get_genesis_timestamp());
+            network_profile.base_fee_params(self.get_genesis_timestamp());
 
         let fees = FeeManager::new(
             spec_id,
-            self.get_base_fee(),
+            self.get_base_fee_for_profile(network_profile),
             !self.disable_min_priority_fee,
-            self.get_gas_price(),
+            self.get_gas_price_for_profile(network_profile),
             self.get_blob_excess_gas_and_price(),
             self.get_blob_params(),
             base_fee_params,
         );
 
-        let (db, fork): (Arc<TokioRwLock<Box<dyn Db>>>, Option<ClientFork>) =
-            if let Some(eth_rpc_url) = self.fork_urls.first().cloned() {
-                self.setup_fork_db(eth_rpc_url, &mut evm_env, &fees).await?
-            } else {
-                (Arc::new(TokioRwLock::new(Box::<MemDb>::default())), None)
-            };
+        let (db, fork, genesis_target) = if let Some(eth_rpc_url) = self.fork_urls.first().cloned()
+        {
+            let (db, fork) =
+                self.setup_fork_db(eth_rpc_url, &mut evm_env, &fees, network_profile).await?;
+            (db, fork, ProfileGenesisTarget::RemoteFork)
+        } else {
+            let db: Box<dyn Db> = Box::<MemDb>::default();
+            (Arc::new(TokioRwLock::new(db)), None, ProfileGenesisTarget::FreshStandalone)
+        };
 
         // if provided use all settings of `genesis.json`
         if let Some(ref genesis) = self.genesis {
@@ -1194,6 +1222,8 @@ impl NodeConfig {
             genesis_init: self.genesis.clone(),
         };
 
+        // Runtime construction binds the current profile and transaction context to this decoder
+        // template.
         let mut decoder_builder = CallTraceDecoderBuilder::new();
         if self.print_traces {
             // if traces should get printed we configure the decoder with the signatures cache
@@ -1207,7 +1237,8 @@ impl NodeConfig {
         let backend = mem::Backend::with_genesis(
             db,
             Arc::new(RwLock::new(evm_env)),
-            self.networks,
+            network_profile,
+            genesis_target,
             genesis,
             fees,
             Arc::new(RwLock::new(fork)),
@@ -1247,8 +1278,10 @@ impl NodeConfig {
         eth_rpc_url: String,
         evm_env: &mut EvmEnv,
         fees: &FeeManager,
+        network_profile: ResolvedNetworkProfile,
     ) -> Result<(Arc<TokioRwLock<Box<dyn Db>>>, Option<ClientFork>)> {
-        let (db, config) = self.setup_fork_db_config(eth_rpc_url, evm_env, fees).await?;
+        let (db, config) =
+            self.setup_fork_db_config(eth_rpc_url, evm_env, fees, network_profile).await?;
         let db: Arc<TokioRwLock<Box<dyn Db>>> = Arc::new(TokioRwLock::new(Box::new(db)));
         let fork = ClientFork::new(config, Arc::clone(&db));
         Ok((db, Some(fork)))
@@ -1264,6 +1297,7 @@ impl NodeConfig {
         eth_rpc_url: String,
         evm_env: &mut EvmEnv,
         fees: &FeeManager,
+        network_profile: ResolvedNetworkProfile,
     ) -> Result<(ForkedDatabase<AnyNetwork>, ClientForkConfig)> {
         debug!(target: "node", ?eth_rpc_url, "setting up fork db");
 
@@ -1421,7 +1455,7 @@ latest block number: {latest_block}"
         apply_chain_and_block_specific_env_changes::<AnyNetwork, _, _>(
             evm_env,
             &block,
-            self.networks,
+            network_profile,
         );
 
         let meta = BlockchainDbMeta::new(evm_env.block_env.clone(), eth_rpc_url.clone());
@@ -1515,6 +1549,10 @@ latest block number: {latest_block}"
 
         self.gas_limit.unwrap_or(DEFAULT_GAS_LIMIT)
     }
+}
+
+const fn tempo_default_base_fee(hardfork: TempoHardfork) -> u64 {
+    if hardfork.is_t1() { TEMPO_T1_BASE_FEE } else { TEMPO_T0_BASE_FEE }
 }
 
 /// If the fork choice is a block number, simply return it with an empty list of transactions.

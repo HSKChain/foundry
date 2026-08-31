@@ -6,9 +6,10 @@
 use alloy_primitives::{Address, Bytes, Log, U256, map::AddressHashMap};
 use eyre::Result;
 use foundry_evm::{
-    core::evm::EthEvmNetwork,
-    executors::{DeployResult, Executor, RawCallResult},
-    traces::{TraceKind, Traces},
+    construction::{ConstructedEvm, DecoderConfig, ReusableEvmState},
+    core::evm::{EthEvmNetwork, FoundryEvmNetwork},
+    executors::{DeployResult, RawCallResult},
+    traces::{CallTraceDecoder, TraceKind, Traces},
 };
 
 /// The function selector of the REPL contract's entrypoint, the `run()` function.
@@ -18,10 +19,9 @@ static RUN_SELECTOR: [u8; 4] = [0xc0, 0x40, 0x62, 0x26];
 ///
 /// Based off of foundry's forge cli runner for scripting.
 /// See: [runner](cli::cmd::forge::script::runner.rs)
-#[derive(Debug)]
-pub struct ChiselRunner {
+pub struct ChiselRunner<FEN: FoundryEvmNetwork = EthEvmNetwork> {
     /// The Executor
-    pub executor: Executor<EthEvmNetwork>,
+    pub executor: ConstructedEvm<FEN>,
     /// An initial balance
     pub initial_balance: U256,
     /// The sender
@@ -47,28 +47,35 @@ pub struct ChiselResult {
     pub returned: Bytes,
     /// Called address
     pub address: Address,
+    /// Trace decoder bound to the execution construction snapshot.
+    pub decoder: CallTraceDecoder,
     /// EVM State at the final instruction of the `run()` function
     pub state: Option<(Vec<U256>, Vec<u8>)>,
 }
 
 /// ChiselRunner implementation
-impl ChiselRunner {
+impl<FEN: FoundryEvmNetwork> ChiselRunner<FEN> {
     /// Create a new [ChiselRunner]
     ///
     /// ### Takes
     ///
-    /// An [Executor], the initial balance of the sender, and the sender's [Address].
+    /// A [ConstructedEvm], the initial balance of the sender, and the sender's [Address].
     ///
     /// ### Returns
     ///
     /// A new [ChiselRunner]
     pub const fn new(
-        executor: Executor<EthEvmNetwork>,
+        executor: ConstructedEvm<FEN>,
         initial_balance: U256,
         sender: Address,
         input: Option<Vec<u8>>,
     ) -> Self {
         Self { executor, initial_balance, sender, input }
+    }
+
+    /// Returns the runner's current reusable backend state.
+    pub fn reusable_state(&self) -> ReusableEvmState<FEN> {
+        self.executor.reusable_state()
     }
 
     /// Run a contract as a REPL session
@@ -97,6 +104,7 @@ impl ChiselRunner {
         let RawCallResult {
             result, reverted, logs, traces, labels, chisel_state, gas_used, ..
         } = res;
+        let decoder = self.executor.trace_decoder(DecoderConfig::default().labels(labels.clone()));
 
         Ok(ChiselResult {
             returned: result,
@@ -106,6 +114,7 @@ impl ChiselRunner {
             traces: traces.map(|traces| vec![(TraceKind::Execution, traces)]).unwrap_or_default(),
             labeled_addresses: labels,
             address,
+            decoder,
             state: chisel_state,
         })
     }

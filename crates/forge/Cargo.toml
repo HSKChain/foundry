@@ -71,7 +71,7 @@ clap = { version = "4", features = ["derive", "env", "unicode", "wrap_help"] }
 clap_complete.workspace = true
 dunce.workspace = true
 indicatif.workspace = true
-inferno = { version = "0.12", default-features = false }
+inferno = { version = "0.12.8", default-features = false }
 itertools.workspace = true
 parking_lot.workspace = true
 regex = { workspace = true, default-features = false }
@@ -100,7 +100,7 @@ opener = "0.8"
 # soldeer
 soldeer-commands.workspace = true
 soldeer-core.workspace = true
-quick-junit = "0.5.2"
+quick-junit = "0.7.0"
 
 [dev-dependencies]
 alloy-hardforks.workspace = true
@@ -126,3 +126,11 @@ aws-kms = ["foundry-wallets/aws-kms"]
 gcp-kms = ["foundry-wallets/gcp-kms"]
 turnkey = ["foundry-wallets/turnkey"]
 isolate-by-default = ["foundry-config/isolate-by-default"]
+hashkey = [
+    "foundry-cli/hashkey",
+    "foundry-config/hashkey",
+    "foundry-evm-networks/hashkey",
+    "foundry-evm/hashkey",
+    "forge-script/hashkey",
+    "forge-verify/hashkey",
+]

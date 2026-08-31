@@ -48,3 +48,11 @@ url.workspace = true
 tokio = { workspace = true, features = ["macros"] }
 foundry-test-utils.workspace = true
 tempfile.workspace = true
+
+[features]
+hashkey = [
+    "foundry-cli/hashkey",
+    "foundry-config/hashkey",
+    "foundry-evm-networks/hashkey",
+    "foundry-evm/hashkey",
+]

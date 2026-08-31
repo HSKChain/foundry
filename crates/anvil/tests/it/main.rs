@@ -9,12 +9,15 @@ mod eip7702;
 mod fork;
 mod gas;
 mod genesis;
+#[cfg(feature = "hashkey")]
+mod hashkey;
 mod ipc;
 mod logs;
 mod optimism;
 mod otterscan;
 mod proof;
 mod pubsub;
+mod resolution;
 mod revert;
 mod sign;
 mod simulate;

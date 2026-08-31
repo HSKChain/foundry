@@ -127,7 +127,33 @@ mod tests {
     /// Generates the [cheatcodes](json_cheatcodes) JSON schema.
     #[cfg(feature = "schema")]
     fn json_schema() -> String {
-        serde_json::to_string_pretty(&schemars::schema_for!(Cheatcodes<'_>)).unwrap()
+        let mut value = serde_json::to_value(schemars::schema_for!(Cheatcodes<'_>)).unwrap();
+        sort_json_keys(&mut value);
+        serde_json::to_string_pretty(&value).unwrap()
+    }
+
+    /// Recursively sorts object keys so the generated schema is byte-identical
+    /// regardless of whether `serde_json` was built with `preserve_order` (the
+    /// full workspace build enables it via `jsonpath_lib`/`revm-inspector`).
+    #[cfg(feature = "schema")]
+    fn sort_json_keys(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::Object(map) => {
+                let mut entries: Vec<(String, serde_json::Value)> =
+                    std::mem::take(map).into_iter().collect();
+                entries.sort_by(|a, b| a.0.cmp(&b.0));
+                for (_, child) in &mut entries {
+                    sort_json_keys(child);
+                }
+                *map = entries.into_iter().collect();
+            }
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    sort_json_keys(item);
+                }
+            }
+            _ => {}
+        }
     }
 
     fn sol_iface() -> String {

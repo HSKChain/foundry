@@ -12,15 +12,18 @@ use alloy_primitives::{Address, B256, U256, hex};
 use eyre::{Result, WrapErr};
 use foundry_compilers::Artifact;
 use foundry_evm::{
-    backend::Backend, decode::decode_console_logs, executors::ExecutorBuilder,
-    inspectors::CheatsConfig, traces::TraceMode,
+    construction::{EvmConstruction, ExecutorConfig},
+    core::evm::{FoundryEvmNetwork, SpecFor},
+    decode::decode_console_logs,
+    inspectors::CheatsConfig,
+    traces::TraceMode,
 };
 use solang_parser::pt;
 use std::ops::ControlFlow;
 use yansi::Paint;
 
 /// Executor implementation for [SessionSource]
-impl SessionSource {
+impl<FEN: FoundryEvmNetwork> SessionSource<FEN> {
     /// Runs the source with the [ChiselRunner]
     pub async fn execute(&mut self) -> Result<ChiselResult> {
         // Recompile the project and ensure no errors occurred.
@@ -38,7 +41,9 @@ impl SessionSource {
         })?;
         let final_pc = final_pc.unwrap_or_default();
         let mut runner = self.build_runner(final_pc).await?;
-        runner.run(bytecode)
+        let result = runner.run(bytecode)?;
+        self.config.state = Some(runner.reusable_state());
+        Ok(result)
     }
 
     /// Inspect a contract element inside of the current session
@@ -104,8 +109,11 @@ impl SessionSource {
 
         let Some((stack, memory)) = &res.state else {
             // Show traces and logs, if there are any, and return an error
-            if let Ok(decoder) = ChiselDispatcher::decode_traces(&source.config, &mut res).await {
-                ChiselDispatcher::show_traces(&decoder, &mut res).await?;
+            if let Ok(decoder) =
+                ChiselDispatcher::<FEN>::decode_traces(&source.config.foundry_config, &mut res)
+                    .await
+            {
+                ChiselDispatcher::<FEN>::show_traces(&decoder, &mut res).await?;
             }
             let decoded_logs = decode_console_logs(&res.logs);
             if !decoded_logs.is_empty() {
@@ -198,44 +206,36 @@ impl SessionSource {
         }
     }
 
-    async fn build_runner(&mut self, final_pc: usize) -> Result<ChiselRunner> {
-        let (evm_env, tx_env, fork_block) = self.config.evm_opts.env().await?;
-
-        let backend = match self.config.backend.clone() {
-            Some(backend) => backend,
-            None => {
-                let fork = self.config.evm_opts.get_fork(
-                    &self.config.foundry_config,
-                    evm_env.cfg_env.chain_id,
-                    fork_block,
-                );
-                let backend = Backend::spawn(fork)?;
-                self.config.backend = Some(backend.clone());
-                backend
-            }
+    async fn build_runner(&mut self, final_pc: usize) -> Result<ChiselRunner<FEN>> {
+        let resolved = self
+            .config
+            .resolved_evm_opts
+            .as_ref()
+            .ok_or_else(|| eyre::eyre!("missing resolved EVM options for Chisel session"))?;
+        let prepared = match self.config.state.as_ref() {
+            Some(state) => EvmConstruction::prepare_with_state::<FEN>(resolved, state).await?,
+            None => EvmConstruction::prepare::<FEN>(resolved, &self.config.foundry_config).await?,
         };
 
-        let executor = ExecutorBuilder::default()
-            .inspectors(|stack| {
-                stack
-                    .logs(self.config.foundry_config.live_logs)
-                    .chisel_state(final_pc)
-                    .trace_mode(TraceMode::Call)
-                    .cheatcodes(
-                        CheatsConfig::new(
-                            &self.config.foundry_config,
-                            self.config.evm_opts.clone(),
-                            None,
-                            None,
-                            None,
-                        )
-                        .into(),
+        let executor = prepared.construct(
+            ExecutorConfig::default()
+                .logs(self.config.foundry_config.live_logs)
+                .chisel_state(final_pc)
+                .trace_mode(TraceMode::Call)
+                .cheatcodes(
+                    CheatsConfig::new(
+                        &self.config.foundry_config,
+                        self.config.evm_opts.clone(),
+                        None,
+                        None,
+                        None,
                     )
-            })
-            .gas_limit(self.config.evm_opts.gas_limit())
-            .spec_id(self.config.foundry_config.evm_spec_id())
-            .legacy_assertions(self.config.foundry_config.legacy_assertions)
-            .build(evm_env, tx_env, backend);
+                    .into(),
+                )
+                .gas_limit(self.config.evm_opts.gas_limit())
+                .spec_id(self.config.foundry_config.evm_spec_id::<SpecFor<FEN>>())
+                .legacy_assertions(self.config.foundry_config.legacy_assertions),
+        )?;
 
         Ok(ChiselRunner::new(executor, U256::MAX, Address::ZERO, self.config.calldata.clone()))
     }
@@ -1248,8 +1248,70 @@ fn unit_multiplier(unit: &Option<pt::Identifier>) -> Result<U256> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "hashkey")]
+    use foundry_cli::opts::GlobalArgs;
     use foundry_compilers::{error::SolcError, solc::Solc};
+    #[cfg(feature = "hashkey")]
+    use foundry_config::{Config, GasLimit};
+    #[cfg(feature = "hashkey")]
+    use foundry_evm::{
+        core::evm::OpEvmNetwork,
+        opts::{
+            EvmOpts,
+            resolution::{CommandProfileResolution, NetworkIntent},
+        },
+        revm::Database,
+    };
+    #[cfg(feature = "hashkey")]
+    use foundry_evm_networks::NetworkConfigs;
     use std::sync::Mutex;
+
+    #[cfg(feature = "hashkey")]
+    #[test]
+    fn stateful_rebuild_preserves_hashkey_profile_and_state() {
+        GlobalArgs::default().block_on(async {
+            let address = Address::random();
+            let mut evm_opts =
+                EvmOpts { networks: NetworkConfigs::with_hashkey(), ..Default::default() };
+            evm_opts.env.chain_id = Some(31337);
+            evm_opts.env.gas_limit = GasLimit(30_000_000);
+            let resolved = CommandProfileResolution::new()
+                .resolve_evm_opts(evm_opts.clone(), NetworkIntent::new())
+                .unwrap();
+            let network_profile = resolved.network_profile();
+            let prepared = EvmConstruction::prepare::<OpEvmNetwork>(&resolved, &Config::default())
+                .await
+                .unwrap();
+            let mut executor = prepared.construct(ExecutorConfig::default()).unwrap();
+            executor.set_balance(address, U256::from(42)).unwrap();
+            let state = executor.reusable_state();
+
+            let mut source = source_with_network::<OpEvmNetwork>();
+            source.config.network_profile = network_profile;
+            source.config.evm_opts = evm_opts;
+            source.config.resolved_evm_opts = Some(resolved);
+            source.config.state = Some(state);
+
+            let (rebuilt, executes) =
+                source.clone_with_new_line("uint256 value = 1".to_string()).unwrap();
+
+            assert!(executes);
+            assert_eq!(rebuilt.config.network_profile, network_profile);
+            let rebuilt_state = rebuilt.config.state.as_ref().unwrap();
+            assert_eq!(rebuilt_state.network_profile(), network_profile);
+            let prepared = EvmConstruction::prepare_with_state::<OpEvmNetwork>(
+                rebuilt.config.resolved_evm_opts.as_ref().unwrap(),
+                rebuilt_state,
+            )
+            .await
+            .unwrap();
+            let mut executor = prepared.construct(ExecutorConfig::default()).unwrap();
+            assert_eq!(
+                Database::basic(executor.backend_mut(), address).unwrap().unwrap().balance,
+                U256::from(42)
+            );
+        });
+    }
 
     #[test]
     fn test_expressions() {
@@ -1517,6 +1579,11 @@ mod tests {
 
     #[track_caller]
     fn source() -> SessionSource {
+        source_with_network()
+    }
+
+    #[track_caller]
+    fn source_with_network<FEN: FoundryEvmNetwork>() -> SessionSource<FEN> {
         // synchronize solc install
         static PRE_INSTALL_SOLC_LOCK: Mutex<bool> = Mutex::new(false);
 

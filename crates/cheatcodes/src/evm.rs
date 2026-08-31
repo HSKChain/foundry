@@ -271,7 +271,7 @@ impl Cheatcode for getNonce_1Call {
 impl Cheatcode for loadCall {
     fn apply_stateful<FEN: FoundryEvmNetwork>(&self, ccx: &mut CheatsCtxt<'_, '_, FEN>) -> Result {
         let Self { target, slot } = *self;
-        ccx.ensure_not_precompile(&target)?;
+        ccx.ensure_loadable_account(&target)?;
 
         ccx.ecx.journal_mut().load_account(target)?;
         let mut val = ccx
@@ -648,7 +648,7 @@ impl Cheatcode for dealCall {
 impl Cheatcode for etchCall {
     fn apply_stateful<FEN: FoundryEvmNetwork>(&self, ccx: &mut CheatsCtxt<'_, '_, FEN>) -> Result {
         let Self { target, newRuntimeBytecode } = self;
-        ccx.ensure_not_precompile(target)?;
+        ccx.ensure_mutable_account(target)?;
         ccx.ecx.journal_mut().load_account(*target)?;
         let bytecode = Bytecode::new_raw_checked(newRuntimeBytecode.clone())
             .map_err(|e| fmt_err!("failed to create bytecode: {e}"))?;
@@ -700,7 +700,7 @@ impl Cheatcode for setNonceUnsafeCall {
 impl Cheatcode for storeCall {
     fn apply_stateful<FEN: FoundryEvmNetwork>(&self, ccx: &mut CheatsCtxt<'_, '_, FEN>) -> Result {
         let Self { target, slot, value } = *self;
-        ccx.ensure_not_precompile(&target)?;
+        ccx.ensure_mutable_account(&target)?;
         ensure_loaded_account(ccx.ecx, target)?;
         ccx.ecx
             .journal_mut()

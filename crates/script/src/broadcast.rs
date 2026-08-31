@@ -496,7 +496,7 @@ impl<FEN: FoundryEvmNetwork> BundledState<FEN> {
                     .collect::<Result<Vec<_>>>()?;
 
                 let estimate_via_rpc = has_different_gas_calc(sequence.chain)
-                    || self.script_config.evm_opts.networks.is_tempo()
+                    || self.script_config.network_profile.is_tempo()
                     || self.args.skip_simulation;
 
                 // We only wait for a transaction receipt before sending the next transaction, if

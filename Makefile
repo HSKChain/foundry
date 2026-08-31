@@ -15,9 +15,9 @@ CARGO_TARGET_DIR ?= target
 # List of features to use when building. Can be overridden via the environment.
 # No jemalloc on Windows
 ifeq ($(OS),Windows_NT)
-    FEATURES ?= aws-kms gcp-kms turnkey cli asm-keccak
+    FEATURES ?= aws-kms gcp-kms turnkey cli asm-keccak js-tracer hashkey
 else
-    FEATURES ?= jemalloc aws-kms gcp-kms turnkey cli asm-keccak
+    FEATURES ?= jemalloc aws-kms gcp-kms turnkey cli asm-keccak js-tracer hashkey
 endif
 
 ##@ Help
@@ -63,6 +63,10 @@ test-doc: ## Run doc tests.
 test: ## Run all tests.
 	$(MAKE) test-unit && \
 	$(MAKE) test-doc
+
+.PHONY: hashkey-gate
+hashkey-gate: ## Run the complete HashKey H20 source evidence gate.
+	./.github/scripts/hashkey-release-gate.sh source
 
 ##@ Linting
 

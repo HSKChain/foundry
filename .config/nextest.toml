@@ -10,6 +10,25 @@ default-filter = "not test(/flaky_/)"
 filter = "test(/ext_integration/)"
 slow-timeout = { period = "5m", terminate-after = 4 }
 
+# The out-of-gas script tests spin an infinite loop against the default ~1B gas
+# limit; under full parallel suite load they can exceed the default timeout.
+[[profile.default.overrides]]
+filter = "test(assert_exit_code_error_on_out_of_gas_script)"
+slow-timeout = { period = "60s", terminate-after = 4 }
+
+# The all-features suite additionally enables `isolate-by-default` and heavy
+# optional features (js-tracer, tracy-allocator); invariant/fuzz runs are
+# CPU-bound and can exceed the default timeout under full parallel load.
+[[profile.default.overrides]]
+filter = "test(/invariant/) or test(/fuzz/) or test(can_generate_solmate_docs) or test(testdata)"
+slow-timeout = { period = "2m", terminate-after = 4 }
+
+# Chisel REPL sessions interact over a pty with per-expect timeouts; under full
+# parallel load the whole session can exceed the default timeout.
+[[profile.default.overrides]]
+filter = "package(chisel) & test(/repl/)"
+slow-timeout = { period = "60s", terminate-after = 4 }
+
 # Do not re-run so that `cargo cheats` is ran locally.
 [[profile.default.overrides]]
 filter = "package(foundry-cheatcodes-spec)"

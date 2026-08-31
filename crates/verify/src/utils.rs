@@ -1,11 +1,7 @@
 use crate::{bytecode::VerifyBytecodeArgs, types::VerificationType};
 use alloy_dyn_abi::DynSolValue;
-use alloy_evm::EvmEnv;
 use alloy_primitives::{Address, Bytes, TxKind};
-use alloy_provider::{
-    Provider,
-    network::{AnyNetwork, AnyRpcBlock},
-};
+use alloy_provider::{Provider, network::BlockResponse};
 use alloy_rpc_types::BlockId;
 use clap::ValueEnum;
 use eyre::{OptionExt, Result};
@@ -19,15 +15,19 @@ use foundry_compilers::artifacts::{BytecodeHash, CompactContractBytecode, EvmVer
 use foundry_config::Config;
 use foundry_evm::{
     constants::DEFAULT_CREATE2_DEPLOYER,
-    core::{decode::RevertDecoder, evm::EthEvmNetwork},
+    construction::PreparedEvm,
+    core::{
+        FoundryBlock as _,
+        decode::RevertDecoder,
+        evm::{BlockEnvFor, BlockResponseFor, EvmEnvFor, FoundryEvmNetwork, SpecFor, TxEnvFor},
+    },
     executors::TracingExecutor,
-    opts::EvmOpts,
-    traces::TraceMode,
+    opts::resolution::ResolvedEvmOpts,
     utils::{apply_chain_and_block_specific_env_changes, block_env_from_header},
 };
-use foundry_evm_networks::NetworkConfigs;
+use foundry_evm_networks::ResolvedNetworkProfile;
 use reqwest::Url;
-use revm::{bytecode::Bytecode, context::TxEnv, database::Database, primitives::hardfork::SpecId};
+use revm::{bytecode::Bytecode, context::Block as _, database::Database};
 use semver::{BuildMetadata, Version};
 use serde::{Deserialize, Serialize};
 use yansi::Paint;
@@ -263,44 +263,40 @@ pub fn check_args_len(
     Ok(())
 }
 
-pub async fn get_tracing_executor(
+pub async fn get_tracing_preparation<FEN: FoundryEvmNetwork>(
     fork_config: &mut Config,
     fork_blk_num: u64,
     evm_version: EvmVersion,
-    evm_opts: EvmOpts,
-) -> Result<(EvmEnv, TxEnv, TracingExecutor<EthEvmNetwork>)> {
+    create2_deployer: Address,
+    resolved: ResolvedEvmOpts,
+) -> Result<(PreparedEvm<FEN>, Address)> {
     fork_config.fork_block_number = Some(fork_blk_num);
     fork_config.evm_version = evm_version;
 
-    let create2_deployer = evm_opts.create2_deployer;
-    let (evm_env, tx_env, fork, _chain, networks) =
-        TracingExecutor::<EthEvmNetwork>::get_fork_material(fork_config, evm_opts).await?;
-
-    let executor = TracingExecutor::<EthEvmNetwork>::new(
-        (evm_env.clone(), tx_env.clone()),
-        fork,
-        Some(fork_config.evm_version),
-        TraceMode::Call,
-        networks,
-        create2_deployer,
-        None,
-    )?;
-
-    Ok((evm_env, tx_env, executor))
+    let (prepared, _) = TracingExecutor::<FEN>::prepare(fork_config, resolved).await?;
+    Ok((prepared, create2_deployer))
 }
 
-pub fn configure_env_block(evm_env: &mut EvmEnv, block: &AnyRpcBlock, config: NetworkConfigs) {
-    let number = evm_env.block_env.number;
-    evm_env.block_env = block_env_from_header(&block.header);
-    evm_env.block_env.number = number;
-    apply_chain_and_block_specific_env_changes::<AnyNetwork, _, _>(evm_env, block, config);
+pub fn configure_env_block<FEN: FoundryEvmNetwork>(
+    evm_env: &mut EvmEnvFor<FEN>,
+    block: &BlockResponseFor<FEN>,
+    network_profile: ResolvedNetworkProfile,
+) {
+    let number = evm_env.block_env.number();
+    evm_env.block_env = block_env_from_header::<BlockEnvFor<FEN>>(block.header());
+    evm_env.block_env.set_number(number);
+    apply_chain_and_block_specific_env_changes::<FEN::Network, _, _>(
+        evm_env,
+        block,
+        network_profile,
+    );
 }
 
-pub fn deploy_contract(
-    executor: &mut TracingExecutor<EthEvmNetwork>,
-    evm_env: &EvmEnv,
-    tx_env: &TxEnv,
-    spec_id: SpecId,
+pub fn deploy_contract<FEN: FoundryEvmNetwork>(
+    executor: &mut TracingExecutor<FEN>,
+    evm_env: &EvmEnvFor<FEN>,
+    tx_env: &TxEnvFor<FEN>,
+    spec_id: SpecFor<FEN>,
     to: Option<TxKind>,
 ) -> Result<Address, eyre::ErrReport> {
     let mut evm_env = evm_env.clone();
@@ -349,9 +345,9 @@ pub fn deploy_contract(
     }
 }
 
-pub async fn get_runtime_codes(
-    executor: &mut TracingExecutor<EthEvmNetwork>,
-    provider: &impl Provider<AnyNetwork>,
+pub async fn get_runtime_codes<FEN: FoundryEvmNetwork>(
+    executor: &mut TracingExecutor<FEN>,
+    provider: &impl Provider<FEN::Network>,
     address: Address,
     fork_address: Address,
     block: Option<u64>,

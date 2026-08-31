@@ -56,6 +56,12 @@ forgetest!(testdata, |_prj, cmd| {
     } else {
         args.push(&nmc_default);
     }
+    // The hashkey fixtures under `default/hashkey` exercise the HashKey H20 network
+    // profile (factory + precompiles), which is not active in the generic testdata
+    // run. They are covered by the dedicated `hashkey::` CLI tests, which embed the
+    // same fixtures into a `network = "hashkey"` project.
+    args.push("--no-match-path");
+    args.push("default/hashkey/**");
 
     let orig_assert = cmd.args(args).assert();
     if orig_assert.get_output().status.success() {
@@ -113,6 +119,45 @@ forgetest!(can_set_filter_values, |prj, cmd| {
     assert_eq!(config.path_pattern.unwrap(), glob);
     assert_eq!(config.path_pattern_inverse, None);
     assert_eq!(config.coverage_pattern_inverse, None);
+});
+
+forgetest_async!(fork_identity_selects_tempo_execution, |prj, cmd| {
+    let (_api, handle) = spawn(NodeConfig::test_tempo()).await;
+    let fork_url = handle.http_endpoint();
+
+    prj.add_source(
+        "Basic.t.sol",
+        r#"
+pragma solidity ^0.8.20;
+contract BasicTest {
+    function test_ok() public {}
+}
+"#,
+    );
+
+    cmd.args(["test", "--fork-url", &fork_url, "--quiet"]).assert_success();
+});
+
+forgetest!(fork_identity_unavailable_fails, |prj, cmd| {
+    prj.add_source(
+        "Basic.t.sol",
+        r#"
+pragma solidity ^0.8.20;
+contract BasicTest {
+    function test_ok() public {}
+}
+"#,
+    );
+
+    cmd.args(["build", "--quiet"]).assert_success();
+    cmd.forge_fuse()
+        .args(["test", "--fork-url", "http://127.0.0.1:1", "--quiet"])
+        .assert_failure()
+        .stdout_eq(str![r#""#])
+        .stderr_eq(str![[r#"
+Error: failed to resolve network profile from fork identity: fork identity transport unavailable: eth_chainId request failed
+
+"#]]);
 });
 
 fn dummy_test_filter(cmd: &mut TestCommand) {
@@ -2222,8 +2267,8 @@ forgetest_init!(should_generate_junit_xml_report, |prj, cmd| {
 
     cmd.args(["test", "--junit"]).assert_failure().stdout_eq(str![[r#"
 <?xml version="1.0" encoding="UTF-8"?>
-<testsuites name="Test run" tests="6" failures="2" errors="0" timestamp="[..]" time="[..]">
-    <testsuite name="src/JunitReportTest.t.sol:AJunitReportTest" tests="2" disabled="0" errors="0" failures="2" time="[..]">
+<testsuites name="Test run" tests="6" skipped="2" failures="2" errors="0" timestamp="[..]" time="[..]">
+    <testsuite name="src/JunitReportTest.t.sol:AJunitReportTest" tests="2" skipped="0" errors="0" failures="2" time="[..]">
         <testcase name="test_junit_assert_fail()" time="[..]">
             <failure message="panic: assertion failed (0x01)"/>
             <system-out>[FAIL: panic: assertion failed (0x01)] test_junit_assert_fail() ([GAS])</system-out>
@@ -2234,7 +2279,7 @@ forgetest_init!(should_generate_junit_xml_report, |prj, cmd| {
         </testcase>
         <system-out>Suite result: FAILED. 0 passed; 2 failed; 0 skipped; [ELAPSED]</system-out>
     </testsuite>
-    <testsuite name="src/JunitReportTest.t.sol:BJunitReportTest" tests="4" disabled="2" errors="0" failures="0" time="[..]">
+    <testsuite name="src/JunitReportTest.t.sol:BJunitReportTest" tests="4" skipped="2" errors="0" failures="0" time="[..]">
         <testcase name="test_junit_pass()" time="[..]">
             <system-out>[PASS] test_junit_pass() ([GAS])</system-out>
         </testcase>
@@ -2275,8 +2320,8 @@ contract JunitReportTest is Test {
 
     cmd.args(["test", "--junit", "-vvvv"]).assert_success().stdout_eq(str![[r#"
 <?xml version="1.0" encoding="UTF-8"?>
-<testsuites name="Test run" tests="1" failures="0" errors="0" timestamp="[..]" time="[..]">
-    <testsuite name="src/JunitReportTest.t.sol:JunitReportTest" tests="1" disabled="0" errors="0" failures="0" time="[..]">
+<testsuites name="Test run" tests="1" skipped="0" failures="0" errors="0" timestamp="[..]" time="[..]">
+    <testsuite name="src/JunitReportTest.t.sol:JunitReportTest" tests="1" skipped="0" errors="0" failures="0" time="[..]">
         <testcase name="test_junit_with_logs()" time="[..]">
             <system-out>[PASS] test_junit_with_logs() ([GAS])/nLogs:/n  Step1/n  Step2/n  Step3/n</system-out>
         </testcase>
@@ -2987,7 +3032,7 @@ contract ForkTest is Test {
     cmd.args(["test", "--mt", "test_fork_err_message"]).assert_failure().stdout_eq(str![[r#"
 ...
 Ran 1 test for test/ForkTest.t.sol:ForkTest
-[FAIL: vm.createSelectFork: could not instantiate forked environment with provider eth-mainnet.g.alchemy.com; HTTP error 401 with body: Must be authenticated!
+[FAIL: vm.createSelectFork: could not instantiate forked environment with provider eth-mainnet.g.alchemy.com; HTTP error 401 with body: [..]
 
 ...
 

@@ -1,6 +1,7 @@
 use alloy_evm::{
     EthEvm, EthEvmFactory, Evm, EvmEnv, EvmFactory, eth::EthEvmContext, precompiles::PrecompilesMap,
 };
+use foundry_evm_networks::NetworkExecutionContext;
 use foundry_fork_db::DatabaseError;
 use revm::{
     context::{
@@ -45,9 +46,18 @@ impl FoundryEvmFactory for EthEvmFactory {
         evm_env: EvmEnv,
         inspector: I,
     ) -> Self::FoundryEvm<'db, I> {
+        let chain_id = evm_env.cfg_env.chain_id;
+        let timestamp = evm_env.block_env.timestamp.saturating_to();
         let mut eth_evm = Self::default().create_evm_with_inspector(db, evm_env, inspector);
         eth_evm.cfg.tx_chain_id_check = true;
-        eth_evm.inspector().get_networks().inject_precompiles(eth_evm.precompiles_mut());
+        eth_evm
+            .inspector()
+            .get_network_profile()
+            .inject_precompiles(
+                eth_evm.precompiles_mut(),
+                NetworkExecutionContext::new(chain_id, timestamp),
+            )
+            .expect("resolved network profile precompile composition must be compatible");
         eth_evm
     }
 
@@ -74,6 +84,7 @@ impl<'db, I: FoundryInspectorExt<EthEvmContext<&'db mut dyn DatabaseExt<EthEvmFa
 
     fn run_execution(&mut self, frame: FrameInput) -> Result<FrameResult, EVMError<DatabaseError>> {
         let mut handler = EthEvmHandler::<I>::default();
+        let reservoir = frame.reservoir();
 
         // Create first frame
         let memory =
@@ -84,7 +95,7 @@ impl<'db, I: FoundryInspectorExt<EthEvmContext<&'db mut dyn DatabaseExt<EthEvmFa
         let mut frame_result = handler.inspect_run_exec_loop(self, first_frame_input)?;
 
         // Handle last frame result
-        handler.last_frame_result(self, &mut frame_result)?;
+        handler.last_frame_result(self, reservoir, &mut frame_result)?;
 
         Ok(frame_result)
     }

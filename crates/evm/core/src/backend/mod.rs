@@ -5,7 +5,7 @@ use crate::{
     constants::{CALLER, CHEATCODE_ADDRESS, DEFAULT_CREATE2_DEPLOYER, TEST_CONTRACT_ADDRESS},
     evm::{
         BlockEnvFor, EthEvmNetwork, EvmEnvFor, FoundryContextFor, FoundryEvmFactory,
-        FoundryEvmNetwork, HaltReasonFor, PrecompilesFor, SpecFor, TxEnvFor,
+        FoundryEvmNetwork, HaltReasonFor, SpecFor, TxEnvFor,
     },
     fork::{CreateFork, ForkId, MultiFork},
     state_snapshot::StateSnapshots,
@@ -17,12 +17,14 @@ use alloy_genesis::GenesisAccount;
 use alloy_network::{
     AnyNetwork, AnyRpcBlock, AnyRpcTransaction, BlockResponse, Network, TransactionResponse,
 };
-use alloy_primitives::{Address, B256, TxKind, U256, keccak256, uint};
+use alloy_primitives::{Address, B256, TxKind, U256, keccak256, map::AddressSet, uint};
 use alloy_rpc_types::BlockNumberOrTag;
 use eyre::Context;
 use foundry_common::{SYSTEM_TRANSACTION_TYPE, is_known_system_sender};
+use foundry_evm_networks::{
+    LocalGenesisState, NetworkExecutionContext, ProfileGenesisTarget, ResolvedNetworkProfile,
+};
 pub use foundry_fork_db::{BlockchainDb, ForkBlockEnv, SharedBackend, cache::BlockchainDbMeta};
-use itertools::Itertools;
 use revm::{
     Database, DatabaseCommit, JournalEntry,
     bytecode::Bytecode,
@@ -30,7 +32,7 @@ use revm::{
     context_interface::{journaled_state::account::JournaledAccountTr, result::ResultAndState},
     database::{CacheDB, DatabaseRef, EmptyDB},
     primitives::{AddressMap, HashMap as Map, KECCAK_EMPTY, Log},
-    state::{Account, AccountInfo, EvmState, EvmStorageSlot},
+    state::{Account, AccountInfo, EvmState, EvmStorageSlot, TransactionId},
 };
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -55,6 +57,37 @@ pub use snapshot::{BackendStateSnapshot, RevertStateSnapshotAction, StateSnapsho
 
 // A `revm::Database` that is used in forking mode
 type ForkDB<N, B> = CacheDB<SharedBackend<N, B>>;
+
+struct ForgeLocalGenesisState<'a, FEN: FoundryEvmNetwork>(&'a mut Backend<FEN>);
+
+impl<FEN: FoundryEvmNetwork> LocalGenesisState for ForgeLocalGenesisState<'_, FEN> {
+    type Error = eyre::Report;
+
+    fn patch_account(
+        &mut self,
+        address: Address,
+        code: alloy_primitives::Bytes,
+        nonce: u64,
+    ) -> Result<(), Self::Error> {
+        let account = self.0.basic(address)?.unwrap_or_default();
+        let code_hash = keccak256(code.as_ref());
+        self.0.insert_account_info(
+            address,
+            AccountInfo { code: Some(Bytecode::new_raw(code)), code_hash, nonce, ..account },
+        );
+        Ok(())
+    }
+
+    fn set_storage(
+        &mut self,
+        address: Address,
+        slot: U256,
+        value: U256,
+    ) -> Result<(), Self::Error> {
+        self.0.insert_account_storage(address, slot, value)?;
+        Ok(())
+    }
+}
 
 /// Represents a numeric `ForkId` valid only for the existence of the `Backend`.
 ///
@@ -84,6 +117,9 @@ pub type JournaledState = JournalInner<JournalEntry>;
 pub trait DatabaseExt<F: FoundryEvmFactory>:
     Database<Error = DatabaseError> + DatabaseCommit + Debug
 {
+    /// Returns the immutable runtime network profile owned by this database.
+    fn network_profile(&self) -> ResolvedNetworkProfile;
+
     /// Creates a new state snapshot at the current point of execution.
     ///
     /// A state snapshot is associated with a new unique id that's created for the snapshot.
@@ -441,6 +477,8 @@ pub trait DatabaseExt<F: FoundryEvmFactory>:
 /// after reverting the snapshot.
 #[must_use]
 pub struct Backend<FEN: FoundryEvmNetwork = EthEvmNetwork> {
+    /// Immutable runtime network semantics used by backend-created EVMs.
+    network_profile: ResolvedNetworkProfile,
     /// The access point for managing forks
     forks: MultiFork<AnyNetwork, SpecFor<FEN>, BlockEnvFor<FEN>>,
     // The default in memory db
@@ -473,6 +511,7 @@ pub struct Backend<FEN: FoundryEvmNetwork = EthEvmNetwork> {
 impl<FEN: FoundryEvmNetwork> Clone for Backend<FEN> {
     fn clone(&self) -> Self {
         Self {
+            network_profile: self.network_profile,
             forks: self.forks.clone(),
             mem_db: self.mem_db.clone(),
             fork_init_journaled_state: self.fork_init_journaled_state.clone(),
@@ -485,6 +524,7 @@ impl<FEN: FoundryEvmNetwork> Clone for Backend<FEN> {
 impl<FEN: FoundryEvmNetwork> Debug for Backend<FEN> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Backend")
+            .field("network_profile", &self.network_profile)
             .field("forks", &self.forks)
             .field("mem_db", &self.mem_db)
             .field("fork_init_journaled_state", &self.fork_init_journaled_state)
@@ -494,13 +534,46 @@ impl<FEN: FoundryEvmNetwork> Debug for Backend<FEN> {
     }
 }
 
+/// Internal backend entry point used by the workspace EVM construction module.
+#[doc(hidden)]
+pub mod construction {
+    use super::*;
+
+    /// Creates a backend from one resolved profile and optional initial fork.
+    pub fn spawn<FEN: FoundryEvmNetwork>(
+        fork: Option<CreateFork>,
+        network_profile: ResolvedNetworkProfile,
+    ) -> eyre::Result<Backend<FEN>> {
+        Backend::spawn_for_profile(fork, network_profile)
+    }
+}
+
 impl<FEN: FoundryEvmNetwork> Backend<FEN> {
     /// Creates a new Backend with a spawned multi fork thread.
     ///
     /// If `fork` is `Some` this will use a `fork` database, otherwise with an in-memory
     /// database.
     pub fn spawn(fork: Option<CreateFork>) -> eyre::Result<Self> {
-        Self::new(MultiFork::<AnyNetwork, SpecFor<FEN>, BlockEnvFor<FEN>>::spawn(), fork)
+        let network_profile = fork.as_ref().map(|fork| fork.network_profile).unwrap_or_default();
+        Self::new_with_profile(
+            MultiFork::<AnyNetwork, SpecFor<FEN>, BlockEnvFor<FEN>>::spawn(),
+            fork,
+            network_profile,
+        )
+    }
+
+    fn spawn_for_profile(
+        mut fork: Option<CreateFork>,
+        network_profile: ResolvedNetworkProfile,
+    ) -> eyre::Result<Self> {
+        if let Some(fork) = &mut fork {
+            fork.network_profile = network_profile;
+        }
+        Self::new_with_profile(
+            MultiFork::<AnyNetwork, SpecFor<FEN>, BlockEnvFor<FEN>>::spawn(),
+            fork,
+            network_profile,
+        )
     }
 
     /// Creates a new instance of `Backend`
@@ -513,6 +586,18 @@ impl<FEN: FoundryEvmNetwork> Backend<FEN> {
         forks: MultiFork<AnyNetwork, SpecFor<FEN>, BlockEnvFor<FEN>>,
         fork: Option<CreateFork>,
     ) -> eyre::Result<Self> {
+        let network_profile = fork.as_ref().map(|fork| fork.network_profile).unwrap_or_default();
+        Self::new_with_profile(forks, fork, network_profile)
+    }
+
+    fn new_with_profile(
+        forks: MultiFork<AnyNetwork, SpecFor<FEN>, BlockEnvFor<FEN>>,
+        mut fork: Option<CreateFork>,
+        network_profile: ResolvedNetworkProfile,
+    ) -> eyre::Result<Self> {
+        if let Some(fork) = &mut fork {
+            fork.network_profile = network_profile;
+        }
         trace!(target: "backend", forking_mode=?fork.is_some(), "creating executor backend");
         // Note: this will take of registering the `fork`
         let inner = BackendInner {
@@ -521,24 +606,35 @@ impl<FEN: FoundryEvmNetwork> Backend<FEN> {
         };
 
         let mut backend = Self {
+            network_profile,
             forks,
             mem_db: CacheDB::new(Default::default()),
-            fork_init_journaled_state: inner.new_journaled_state(),
+            fork_init_journaled_state: inner.new_journaled_state(network_profile),
             active_fork_ids: None,
             inner,
         };
 
+        let target = if fork.is_some() {
+            ProfileGenesisTarget::RemoteFork
+        } else {
+            ProfileGenesisTarget::FreshStandalone
+        };
         if let Some(fork) = fork {
             let (fork_id, fork, _) = backend.forks.create_fork(fork)?;
             let fork_db = ForkDB::new(fork);
             let fork_ids = backend.inner.insert_new_fork(
                 fork_id.clone(),
                 fork_db,
-                backend.inner.new_journaled_state(),
+                backend.inner.new_journaled_state(network_profile),
             );
             backend.inner.launched_with_fork = Some((fork_id, fork_ids.0, fork_ids.1));
             backend.active_fork_ids = Some(fork_ids);
         }
+
+        let mut state = ForgeLocalGenesisState(&mut backend);
+        network_profile
+            .apply_profile_genesis(target, &mut state)
+            .wrap_err("failed to apply profile-owned local genesis")?;
 
         trace!(target: "backend", forking_mode=? backend.active_fork_ids.is_some(), "created executor backend");
 
@@ -551,8 +647,20 @@ impl<FEN: FoundryEvmNetwork> Backend<FEN> {
         id: &ForkId,
         fork: Fork<AnyNetwork, BlockEnvFor<FEN>>,
         journaled_state: JournaledState,
+        network_profile: ResolvedNetworkProfile,
     ) -> eyre::Result<Self> {
-        let mut backend = Self::spawn(None)?;
+        let inner = BackendInner {
+            persistent_accounts: HashSet::from(DEFAULT_PERSISTENT_ACCOUNTS),
+            ..Default::default()
+        };
+        let mut backend = Self {
+            network_profile,
+            forks: MultiFork::<AnyNetwork, SpecFor<FEN>, BlockEnvFor<FEN>>::spawn(),
+            mem_db: CacheDB::new(Default::default()),
+            fork_init_journaled_state: inner.new_journaled_state(network_profile),
+            active_fork_ids: None,
+            inner,
+        };
         let fork_ids = backend.inner.insert_new_fork(id.clone(), fork.db, journaled_state);
         backend.inner.launched_with_fork = Some((id.clone(), fork_ids.0, fork_ids.1));
         backend.active_fork_ids = Some(fork_ids);
@@ -561,12 +669,18 @@ impl<FEN: FoundryEvmNetwork> Backend<FEN> {
 
     /// Creates a new instance with a `BackendDatabase::InMemory` cache layer for the `CacheDB`
     pub fn clone_empty(&self) -> Self {
+        let inner = BackendInner {
+            persistent_accounts: HashSet::from(DEFAULT_PERSISTENT_ACCOUNTS),
+            spec_id: self.inner.spec_id,
+            ..Default::default()
+        };
         Self {
+            network_profile: self.network_profile,
             forks: self.forks.clone(),
             mem_db: CacheDB::new(Default::default()),
-            fork_init_journaled_state: self.inner.new_journaled_state(),
+            fork_init_journaled_state: inner.new_journaled_state(self.network_profile),
             active_fork_ids: None,
-            inner: Default::default(),
+            inner,
         }
     }
 
@@ -830,11 +944,6 @@ impl<FEN: FoundryEvmNetwork> Backend<FEN> {
         Ok(res)
     }
 
-    /// Returns true if the address is a precompile
-    pub fn is_existing_precompile(&self, addr: &Address) -> bool {
-        self.inner.precompiles().addresses().contains(addr)
-    }
-
     /// Sets the initial journaled state to use when initializing forks
     #[inline]
     fn set_init_journaled_state(&mut self, journaled_state: JournaledState) {
@@ -857,7 +966,7 @@ impl<FEN: FoundryEvmNetwork> Backend<FEN> {
             .state
             .iter()
             .filter(|(addr, _)| {
-                !self.is_existing_precompile(addr)
+                !self.fork_init_journaled_state.warm_addresses.precompiles().contains(*addr)
                     && !self.inner.persistent_accounts.contains(*addr)
             })
             .map(|(addr, _)| addr)
@@ -929,6 +1038,7 @@ impl<FEN: FoundryEvmNetwork> Backend<FEN> {
         trace!(?id, ?tx_hash, "replay until transaction");
 
         let persistent_accounts = self.inner.persistent_accounts.clone();
+        let network_profile = self.network_profile;
 
         let fork = self.inner.get_fork_by_id_mut(id)?;
         let full_block =
@@ -956,8 +1066,16 @@ impl<FEN: FoundryEvmNetwork> Backend<FEN> {
 
             // Clone the fork's CacheDB once. The underlying SharedBackend is Arc-backed,
             // so only the local cache layer is actually duplicated.
+            let chain_id = evm_env.cfg_env.chain_id;
+            let timestamp = evm_env.block_env.timestamp().saturating_to();
             let replay_db = fork.db.clone();
             let mut evm = FEN::EvmFactory::default().create_evm(replay_db, evm_env);
+            network_profile
+                .inject_precompiles(
+                    evm.precompiles_mut(),
+                    NetworkExecutionContext::new(chain_id, timestamp),
+                )
+                .wrap_err("failed to compose replay precompiles")?;
 
             for tx in &txs_to_replay {
                 let tx_env = TxEnvFor::<FEN>::from_any_rpc_transaction(tx)?;
@@ -980,6 +1098,10 @@ impl<FEN: FoundryEvmNetwork> Backend<FEN> {
 }
 
 impl<FEN: FoundryEvmNetwork> DatabaseExt<FEN::EvmFactory> for Backend<FEN> {
+    fn network_profile(&self) -> ResolvedNetworkProfile {
+        self.network_profile
+    }
+
     fn snapshot_state(
         &mut self,
         journaled_state: &JournaledState,
@@ -1090,15 +1212,16 @@ impl<FEN: FoundryEvmNetwork> DatabaseExt<FEN::EvmFactory> for Backend<FEN> {
             .forks
             .get_evm_env(fork_id)?
             .ok_or_else(|| eyre::eyre!("Requested fork `{}` does not exist", id))?;
+        let network_context = NetworkExecutionContext::new(
+            evm_env.cfg_env.chain_id,
+            evm_env.block_env.timestamp().saturating_to(),
+        );
+        let mut journaled_state =
+            self.inner.new_journaled_state_with_context(self.network_profile, network_context);
 
         // we still need to roll to the transaction, but we only need an empty dummy state since we
         // don't need to update the active journaled state yet
-        self.roll_fork_to_transaction(
-            Some(id),
-            transaction,
-            &mut evm_env,
-            &mut self.inner.new_journaled_state(),
-        )?;
+        self.roll_fork_to_transaction(Some(id), transaction, &mut evm_env, &mut journaled_state)?;
 
         Ok(id)
     }
@@ -1143,6 +1266,10 @@ impl<FEN: FoundryEvmNetwork> DatabaseExt<FEN::EvmFactory> for Backend<FEN> {
             let caller = tx_env.caller();
             let caller_account = active.journaled_state.state.get(&caller).cloned();
             let target_fork = self.inner.get_fork_mut(idx);
+            target_fork
+                .journaled_state
+                .warm_addresses
+                .set_precompile_addresses(active_journaled_state.warm_addresses.precompiles());
 
             // depth 0 will be the default value when the fork was created
             if target_fork.journaled_state.depth == 0 {
@@ -1268,6 +1395,10 @@ impl<FEN: FoundryEvmNetwork> DatabaseExt<FEN::EvmFactory> for Backend<FEN> {
 
                 let active = self.inner.get_fork_mut(active_idx);
                 active.journaled_state = self.fork_init_journaled_state.clone();
+                active
+                    .journaled_state
+                    .warm_addresses
+                    .set_precompile_addresses(journaled_state.warm_addresses.precompiles());
                 active.journaled_state.depth = journaled_state.depth;
 
                 for addr in persistent_addrs {
@@ -1517,7 +1648,7 @@ impl<FEN: FoundryEvmNetwork> DatabaseExt<FEN::EvmFactory> for Backend<FEN> {
                         EvmStorageSlot::new_changed(
                             acc.storage.get(&slot).map(|s| s.present_value).unwrap_or_default(),
                             U256::from_be_bytes(value.0),
-                            0,
+                            TransactionId::ZERO,
                         ),
                     );
                 }
@@ -1952,24 +2083,51 @@ impl<FEN: FoundryEvmNetwork> BackendInner<FEN> {
         self.issued_local_fork_ids.is_empty()
     }
 
-    pub fn precompiles(&self) -> PrecompilesFor<FEN> {
-        let evm = FEN::EvmFactory::default().create_evm(
+    pub fn precompile_addresses(
+        &self,
+        network_profile: ResolvedNetworkProfile,
+        network_context: NetworkExecutionContext,
+    ) -> AddressSet {
+        let mut evm = FEN::EvmFactory::default().create_evm(
             EmptyDB::default(),
             EvmEnv::new(CfgEnv::new_with_spec(self.spec_id), Default::default()),
         );
-        evm.precompiles().clone()
+        network_profile
+            .inject_precompiles(evm.precompiles_mut(), network_context)
+            .expect("resolved network profile precompile composition must be compatible");
+        evm.precompiles().addresses().copied().collect()
     }
 
-    /// Returns a new, empty, `JournaledState` with set precompiles
-    pub fn new_journaled_state(&self) -> JournaledState {
+    /// Returns a new, empty journal with snapshot-independent precompiles.
+    pub fn new_journaled_state(&self, network_profile: ResolvedNetworkProfile) -> JournaledState {
         let mut journal = {
             let mut journal_inner = JournalInner::new();
             journal_inner.set_spec_id(self.spec_id.into());
             journal_inner
         };
+        let mut evm = FEN::EvmFactory::default().create_evm(
+            EmptyDB::default(),
+            EvmEnv::new(CfgEnv::new_with_spec(self.spec_id), Default::default()),
+        );
+        network_profile.inject_reusable_precompiles(evm.precompiles_mut());
+        let precompile_addresses = evm.precompiles().addresses().copied().collect();
+        journal.warm_addresses.set_precompile_addresses(&precompile_addresses);
         journal
-            .warm_addresses
-            .set_precompile_addresses(self.precompiles().addresses().copied().collect());
+    }
+
+    /// Returns a new, empty journal bound to one execution snapshot.
+    pub fn new_journaled_state_with_context(
+        &self,
+        network_profile: ResolvedNetworkProfile,
+        network_context: NetworkExecutionContext,
+    ) -> JournaledState {
+        let mut journal = {
+            let mut journal_inner = JournalInner::new();
+            journal_inner.set_spec_id(self.spec_id.into());
+            journal_inner
+        };
+        let precompile_addresses = self.precompile_addresses(network_profile, network_context);
+        journal.warm_addresses.set_precompile_addresses(&precompile_addresses);
         journal
     }
 }
@@ -2112,7 +2270,12 @@ fn commit_transaction<FEN: FoundryEvmNetwork>(
         let fork = fork.clone();
         let journaled_state = journaled_state.clone();
         let depth = journaled_state.depth;
-        let mut db: Backend<FEN> = Backend::new_with_fork(fork_id, fork, journaled_state)?;
+        let mut db: Backend<FEN> = Backend::new_with_fork(
+            fork_id,
+            fork,
+            journaled_state,
+            inspector.get_network_profile(),
+        )?;
 
         let mut evm =
             FEN::EvmFactory::default().create_foundry_nested_evm(&mut db, evm_env, inspector);
@@ -2159,11 +2322,17 @@ fn apply_state_changeset<N: Network, B: ForkBlockEnv>(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "hashkey")]
+    use crate::backend::DatabaseExt;
     use crate::{backend::Backend, evm::EthEvmNetwork, opts::EvmOpts};
+    #[cfg(feature = "hashkey")]
+    use alloy_primitives::keccak256;
     use alloy_primitives::{U256, address};
     use alloy_provider::Provider;
     use foundry_common::provider::get_http_provider;
     use foundry_config::{Config, NamedChain};
+    #[cfg(feature = "hashkey")]
+    use foundry_evm_networks::NetworkConfigs;
     use foundry_fork_db::cache::{BlockchainDb, BlockchainDbMeta};
     use revm::{
         context::{BlockEnv, TxEnv},
@@ -2171,8 +2340,49 @@ mod tests {
         primitives::hardfork::SpecId,
     };
 
+    #[cfg(feature = "hashkey")]
+    #[test]
+    fn backend_reuses_profile_and_state_without_an_activation_snapshot() {
+        let profile = NetworkConfigs::with_hashkey().resolve();
+        let mut backend = super::construction::spawn::<EthEvmNetwork>(None, profile).unwrap();
+        let h20_factory = address!("0177FF0000000000000000000000000000000000");
+        let markers = [
+            address!("0177FF0000000000000000000000000000000000"),
+            address!("0177FF0000000000000000000000000000000001"),
+            address!("0177FF0000000000000000000000000000000002"),
+        ];
+        for address in markers {
+            let account = backend.basic_ref(address).unwrap().unwrap();
+            assert_eq!(account.code_hash, keccak256([0xef]));
+            assert_eq!(account.nonce, 1);
+            assert_eq!(account.code.unwrap().original_bytes().as_ref(), &[0xef]);
+        }
+        let activation_registry = address!("0177FF0000000000000000000000000000000001");
+        let feature_slot = alloy_primitives::uint!(
+            0x8b392998db41c7a56188d244d46e8d66c0e0050b53b0bc8c714ab53aedfe76c7_U256
+        );
+        assert_eq!(backend.storage_ref(activation_registry, feature_slot).unwrap(), U256::from(1));
+        backend.insert_account_storage(activation_registry, feature_slot, U256::ZERO).unwrap();
+        let cloned = backend.clone();
+        let empty = backend.clone_empty();
+
+        assert_eq!(backend.network_profile(), profile);
+        assert_eq!(cloned.network_profile(), profile);
+        assert_eq!(empty.network_profile(), profile);
+        assert_eq!(cloned.storage_ref(activation_registry, feature_slot).unwrap(), U256::ZERO);
+        let empty_factory = empty.basic_ref(h20_factory).unwrap().unwrap_or_default();
+        assert_ne!(empty_factory.code.unwrap().original_bytes().as_ref(), &[0xef]);
+        assert_eq!(empty_factory.nonce, 0);
+        assert!(
+            !backend.fork_init_journaled_state.warm_addresses.precompiles().contains(&h20_factory)
+        );
+        assert!(
+            !empty.fork_init_journaled_state.warm_addresses.precompiles().contains(&h20_factory)
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread")]
-    async fn can_read_write_cache() {
+    async fn can_read_write_fork_cache() {
         let endpoint = &*foundry_test_utils::rpc::next_http_rpc_endpoint();
         let provider = get_http_provider(endpoint);
 
@@ -2182,12 +2392,13 @@ mod tests {
         evm_opts.fork_url = Some(endpoint.to_string());
         evm_opts.fork_block_number = Some(block_num);
 
-        let (evm_env, _, fork_block) = evm_opts.env::<SpecId, BlockEnv, TxEnv>().await.unwrap();
+        let resolved = crate::opts::resolution::CommandProfileResolution::new()
+            .resolve_evm_opts(evm_opts, crate::opts::resolution::NetworkIntent::new())
+            .unwrap();
+        let prepared =
+            resolved.prepare::<SpecId, BlockEnv, TxEnv>(Some(&Config::default())).await.unwrap();
 
-        let fork =
-            evm_opts.get_fork(&Config::default(), evm_env.cfg_env.chain_id, fork_block).unwrap();
-
-        let backend = Backend::<EthEvmNetwork>::spawn(Some(fork)).unwrap();
+        let backend = Backend::<EthEvmNetwork>::spawn(prepared.fork).unwrap();
 
         // some rng contract from etherscan
         let address = address!("0x63091244180ae240c87d1f528f5f269134cb07b3");
@@ -2201,7 +2412,7 @@ mod tests {
 
         let meta = BlockchainDbMeta {
             chain: None,
-            block_env: evm_env.block_env,
+            block_env: prepared.evm_env.block_env,
             hosts: Default::default(),
         };
 

@@ -53,7 +53,7 @@ use std::{
 };
 
 mod builder;
-pub use builder::ExecutorBuilder;
+pub(crate) use builder::ExecutorBuilder;
 
 pub mod fuzz;
 pub use fuzz::FuzzedExecutor;
@@ -1238,7 +1238,7 @@ fn convert_executed_result<FEN: FoundryEvmNetwork>(
         result,
         gas_used,
         gas_refunded,
-        stipend: gas.initial_total_gas,
+        stipend: gas.initial_total_gas(),
         logs,
         labels,
         traces,
